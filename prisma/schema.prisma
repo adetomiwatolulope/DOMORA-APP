@@ -1,0 +1,320 @@
+// Domora Prisma schema — PRD Section 10, ported verbatim.
+// Locked data model. Do not rename models, enums, or fields. Do not remove a
+// field because it looks unused yet. Extend only additively (DB-1).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SEEKER
+  AGENT
+  AGENCY_ADMIN
+  LANDLORD
+  PLATFORM_REVIEWER
+  SUPER_ADMIN
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AffiliationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+}
+
+enum PropertyType {
+  APARTMENT
+  HOUSE
+  DUPLEX
+  LAND
+  COMMERCIAL
+  OTHER
+}
+
+enum InspectionSlotStatus {
+  AVAILABLE
+  BOOKED
+  CANCELLED
+}
+
+enum BookingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  AGENT_NO_SHOW
+  LISTING_MISREPRESENTED
+}
+
+enum ReportTargetType {
+  LISTING
+  PROFILE
+}
+
+enum ReviewCaseStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+}
+
+enum SubscriptionTier {
+  FREE
+  AGENCY_PRO
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+}
+
+model User {
+  id                  String                @id @default(uuid())
+  role                UserRole
+  email               String                @unique
+  passwordHash        String
+  // REVIEW FIX #13: nullable region field so Open Question 6 can resolve
+  // later without a restructuring migration.
+  country             String?
+  createdAt           DateTime              @default(now())
+  agentProfile        AgentProfile?
+  agencyProfile       AgencyProfile?
+  landlordProfile     LandlordProfile?
+  verificationRequests VerificationRequest[]
+  bookingsAsSeeker    InspectionBooking[]    @relation("SeekerBookings")
+  reportsSubmitted    Report[]              @relation("Reporter")
+  reportsAgainstMe    Report[]              @relation("ReportedUser")
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+
+  @@index([role])
+}
+
+model AgencyProfile {
+  id                 String                @id @default(uuid())
+  userId             String                @unique
+  user               User                  @relation(fields: [userId], references: [id])
+  name               String
+  verificationStatus VerificationStatus     @default(PENDING)
+  createdAt          DateTime              @default(now())
+  agents             AgentProfile[]
+  affiliations       AgencyAffiliation[]
+  listings           Listing[]
+  subscription       Subscription?
+
+  @@index([verificationStatus])
+}
+
+// REVIEW FIX #2: new model backing the corrected PR-VER-003 flow. An agent
+// cannot self-attach to an agency by setting agencyId alone — a matching
+// ACCEPTED row here is required first.
+model AgencyAffiliation {
+  id         String            @id @default(uuid())
+  agentId    String
+  agent      AgentProfile      @relation(fields: [agentId], references: [id])
+  agencyId   String
+  agency     AgencyProfile     @relation(fields: [agencyId], references: [id])
+  status     AffiliationStatus @default(PENDING)
+  createdAt  DateTime          @default(now())
+  resolvedAt DateTime?
+
+  @@index([agentId])
+  @@index([agencyId, status])
+}
+
+model AgentProfile {
+  id                 String                @id @default(uuid())
+  userId             String                @unique
+  user               User                  @relation(fields: [userId], references: [id])
+  agencyId           String?
+  agency             AgencyProfile?        @relation(fields: [agencyId], references: [id])
+  verificationStatus VerificationStatus     @default(PENDING)
+  // REVIEW FIX #4: enforces the individual-agent listing cap named in
+  // Section 8. Ignored while agencyId points at an agency with an active
+  // AGENCY_PRO subscription.
+  activeListingCap   Int                   @default(5)
+  createdAt          DateTime              @default(now())
+  affiliations       AgencyAffiliation[]
+  listings           Listing[]
+
+  @@index([agencyId])
+  @@index([verificationStatus])
+}
+
+model LandlordProfile {
+  id                 String                @id @default(uuid())
+  userId             String                @unique
+  user               User                  @relation(fields: [userId], references: [id])
+  verificationStatus VerificationStatus     @default(PENDING)
+  activeListingCap   Int                   @default(5)
+  createdAt          DateTime              @default(now())
+  listings           Listing[]
+
+  @@index([verificationStatus])
+}
+
+model VerificationRequest {
+  id           String             @id @default(uuid())
+  userId       String
+  user         User               @relation(fields: [userId], references: [id])
+  documentKey  String // opaque storage key, never a public URL
+  status       VerificationStatus @default(PENDING)
+  reviewNote   String?
+  reviewedById String?
+  createdAt    DateTime           @default(now())
+  reviewedAt   DateTime?
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Listing {
+  id             String         @id @default(uuid())
+  title          String
+  price          Int // stored in smallest currency unit
+  address        String
+  latitude       Float
+  longitude      Float
+  // REVIEW FIX #13: nullable region field, same rationale as User.country.
+  country        String?
+  propertyType   PropertyType
+  status         ListingStatus  @default(DRAFT)
+  hasOpenReports Boolean        @default(false)
+  agentId        String?
+  agent          AgentProfile?  @relation(fields: [agentId], references: [id])
+  agencyId       String?
+  agency         AgencyProfile? @relation(fields: [agencyId], references: [id])
+  landlordId     String?
+  landlord       LandlordProfile? @relation(fields: [landlordId], references: [id])
+  createdAt      DateTime       @default(now())
+  images         ListingImage[]
+  inspectionSlots InspectionSlot[]
+  reports        Report[]
+
+  @@index([status])
+  @@index([latitude, longitude])
+  @@index([agentId])
+  @@index([agencyId])
+  @@index([landlordId])
+}
+
+model ListingImage {
+  id         String    @id @default(uuid())
+  listingId  String
+  listing    Listing   @relation(fields: [listingId], references: [id])
+  storageKey String
+  uploadedAt DateTime  @default(now())
+
+  @@index([listingId])
+}
+
+model InspectionSlot {
+  id        String               @id @default(uuid())
+  listingId String
+  listing   Listing              @relation(fields: [listingId], references: [id])
+  startTime DateTime
+  status    InspectionSlotStatus @default(AVAILABLE)
+  booking   InspectionBooking?
+
+  @@index([listingId, status])
+}
+
+model InspectionBooking {
+  id            String        @id @default(uuid())
+  slotId        String        @unique
+  slot          InspectionSlot @relation(fields: [slotId], references: [id])
+  seekerId      String
+  seeker        User          @relation("SeekerBookings", fields: [seekerId], references: [id])
+  status        BookingStatus @default(SCHEDULED)
+  // REVIEW FIX #5: backs PR-BOK-005's auto-completion rule so it is
+  // distinguishable from a seeker-confirmed completion.
+  autoCompleted Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+
+  @@index([seekerId])
+  @@index([status])
+}
+
+model Report {
+  id           String          @id @default(uuid())
+  reporterId   String
+  reporter     User            @relation("Reporter", fields: [reporterId], references: [id])
+  targetType   ReportTargetType
+  listingId    String?
+  listing      Listing?        @relation(fields: [listingId], references: [id])
+  // REVIEW FIX #6: was a bare String with no relation. Now a proper
+  // relation so the database enforces the target exists and a reviewer
+  // can traverse directly to the reported profile.
+  targetUserId String?
+  targetUser   User?           @relation("ReportedUser", fields: [targetUserId], references: [id])
+  reason       String
+  createdAt    DateTime        @default(now())
+  reviewCase   ReviewCase?
+
+  @@index([listingId])
+  @@index([targetUserId])
+}
+
+model ReviewCase {
+  id           String           @id @default(uuid())
+  reportId     String           @unique
+  report       Report           @relation(fields: [reportId], references: [id])
+  status       ReviewCaseStatus @default(OPEN)
+  resolution   String?
+  resolvedById String?
+  createdAt    DateTime         @default(now())
+  resolvedAt   DateTime?
+
+  @@index([status])
+}
+
+model Subscription {
+  id        String           @id @default(uuid())
+  agencyId  String           @unique
+  agency    AgencyProfile    @relation(fields: [agencyId], references: [id])
+  tier      SubscriptionTier @default(FREE)
+  startedAt DateTime         @default(now())
+  endsAt    DateTime?
+
+  @@index([tier])
+}
+
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id])
+  channel   NotificationChannel
+  template  String
+  sentAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  targetId  String
+  ipAddress String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([targetId])
+}

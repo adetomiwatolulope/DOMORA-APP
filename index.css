@@ -1,0 +1,341 @@
+:root {
+  /* 
+   * Primitive Colors
+   * FOUNDATION ONLY - DO NOT APPLY DIRECTLY ON UI
+   */
+  --primitive-key-colors-primary-key-color: #012624ff;
+  --primitive-key-colors-secondary-key-color: #04958dff;
+  --primitive-key-colors-tertiary-key-color: #003330ff;
+  --primitive-key-colors-neutral-key-color: #1e1e1eff;
+  --primitive-key-colors-neutral-variant-key-color: #444444ff;
+  --primitive-key-colors-error-key-color: #ba0d10ff;
+  --primitive-key-colors-info-key-color: #0d2abaff;
+  --primitive-key-colors-warning-key-color: #ba7b0dff;
+  --primitive-key-colors-success-key-color: #04802eff;
+  --primitive-primary-colors-primary-0: #000000ff;
+  --primitive-primary-colors-primary-10: #01322fff;
+  --primitive-primary-colors-primary-20: #03635eff;
+  --primitive-primary-colors-primary-30: #04958dff;
+  --primitive-primary-colors-primary-40: #05c7bcff;
+  --primitive-primary-colors-primary-50: #07f8ebff;
+  --primitive-primary-colors-primary-60: #38faefff;
+  --primitive-primary-colors-primary-70: #6afbf3ff;
+  --primitive-primary-colors-primary-80: #9cfcf7ff;
+  --primitive-primary-colors-primary-90: #cdfefbff;
+  --primitive-primary-colors-primary-95: #e6fefdff;
+  --primitive-primary-colors-primary-98: #f5fffeff;
+  --primitive-primary-colors-primary-99: #faffffff;
+  --primitive-primary-colors-primary-100: #ffffffff;
+  --primitive-secondary-colors-secondary-0: #000000ff;
+  --primitive-secondary-colors-secondary-10: #01322fff;
+  --primitive-secondary-colors-secondary-20: #03635eff;
+  --primitive-secondary-colors-secondary-30: #04958dff;
+  --primitive-secondary-colors-secondary-40: #05c7bcff;
+  --primitive-secondary-colors-secondary-50: #07f8ebff;
+  --primitive-secondary-colors-secondary-60: #38faefff;
+  --primitive-secondary-colors-secondary-70: #6afbf3ff;
+  --primitive-secondary-colors-secondary-80: #9cfcf7ff;
+  --primitive-secondary-colors-secondary-90: #cdfefbff;
+  --primitive-secondary-colors-secondary-95: #e6fefdff;
+  --primitive-secondary-colors-secondary-98: #f5fffeff;
+  --primitive-secondary-colors-secondary-99: #faffffff;
+  --primitive-secondary-colors-secondary-100: #ffffffff;
+  --primitive-tertiary-colors-tertiary-0: #000000ff;
+  --primitive-tertiary-colors-tertiary-10: #003330ff;
+  --primitive-tertiary-colors-tertiary-20: #006660ff;
+  --primitive-tertiary-colors-tertiary-30: #009990ff;
+  --primitive-tertiary-colors-tertiary-40: #00ccc0ff;
+  --primitive-tertiary-colors-tertiary-50: #00fff0ff;
+  --primitive-tertiary-colors-tertiary-60: #33fff3ff;
+  --primitive-tertiary-colors-tertiary-70: #66fff6ff;
+  --primitive-tertiary-colors-tertiary-80: #99fff9ff;
+  --primitive-tertiary-colors-tertiary-90: #ccfffcff;
+  --primitive-tertiary-colors-tertiary-95: #e5fffeff;
+  --primitive-tertiary-colors-tertiary-98: #f5fffeff;
+  --primitive-tertiary-colors-tertiary-99: #faffffff;
+  --primitive-tertiary-colors-tertiary-100: #ffffffff;
+  --primitive-neutral-colors-neutral-0: #000000ff;
+  --primitive-neutral-colors-neutral-10: #1a1a1aff;
+  --primitive-neutral-colors-neutral-20: #333333ff;
+  --primitive-neutral-colors-neutral-30: #4d4d4dff;
+  --primitive-neutral-colors-neutral-40: #666666ff;
+  --primitive-neutral-colors-neutral-50: #808080ff;
+  --primitive-neutral-colors-neutral-60: #999999ff;
+  --primitive-neutral-colors-neutral-70: #b3b3b3ff;
+  --primitive-neutral-colors-neutral-80: #ccccccff;
+  --primitive-neutral-colors-neutral-90: #e6e6e6ff;
+  --primitive-neutral-colors-neutral-95: #f2f2f2ff;
+  --primitive-neutral-colors-neutral-98: #fafafaff;
+  --primitive-neutral-colors-neutral-99: #fcfcfcff;
+  --primitive-neutral-colors-neutral-100: #ffffffff;
+  --primitive-neutral-variant-colors-neutral-variant-0: #000000ff;
+  --primitive-neutral-variant-colors-neutral-variant-10: #1a1a1aff;
+  --primitive-neutral-variant-colors-neutral-variant-20: #333333ff;
+  --primitive-neutral-variant-colors-neutral-variant-30: #4d4d4dff;
+  --primitive-neutral-variant-colors-neutral-variant-40: #666666ff;
+  --primitive-neutral-variant-colors-neutral-variant-50: #808080ff;
+  --primitive-neutral-variant-colors-neutral-variant-60: #999999ff;
+  --primitive-neutral-variant-colors-neutral-variant-70: #b3b3b3ff;
+  --primitive-neutral-variant-colors-neutral-variant-80: #ccccccff;
+  --primitive-neutral-variant-colors-neutral-variant-90: #e6e6e6ff;
+  --primitive-neutral-variant-colors-neutral-variant-95: #f2f2f2ff;
+  --primitive-neutral-variant-colors-neutral-variant-98: #fafafaff;
+  --primitive-neutral-variant-colors-neutral-variant-99: #fcfcfcff;
+  --primitive-neutral-variant-colors-neutral-variant-100: #ffffffff;
+  --primitive-error-colors-error-0: #000000ff;
+  --primitive-error-colors-error-10: #300304ff;
+  --primitive-error-colors-error-20: #5f0708ff;
+  --primitive-error-colors-error-30: #8f0a0cff;
+  --primitive-error-colors-error-40: #bf0d10ff;
+  --primitive-error-colors-error-50: #ee1114ff;
+  --primitive-error-colors-error-60: #f24043ff;
+  --primitive-error-colors-error-70: #f57072ff;
+  --primitive-error-colors-error-80: #f8a0a1ff;
+  --primitive-error-colors-error-90: #fccfd0ff;
+  --primitive-error-colors-error-95: #fddedeff;
+  --primitive-error-colors-error-98: #feececff;
+  --primitive-error-colors-error-99: #fef5f6ff;
+  --primitive-error-colors-error-100: #ffffffff;
+  --primitive-info-colors-info-0: #000000ff;
+  --primitive-info-colors-info-10: #030b30ff;
+  --primitive-info-colors-info-20: #07155fff;
+  --primitive-info-colors-info-30: #0a208fff;
+  --primitive-info-colors-info-40: #0d2bbfff;
+  --primitive-info-colors-info-50: #1136eeff;
+  --primitive-info-colors-info-60: #405ef2ff;
+  --primitive-info-colors-info-70: #7086f5ff;
+  --primitive-info-colors-info-80: #a0aef8ff;
+  --primitive-info-colors-info-90: #cfd7fcff;
+  --primitive-info-colors-info-95: #dee3fdff;
+  --primitive-info-colors-info-98: #eceffeff;
+  --primitive-info-colors-info-99: #f5f7feff;
+  --primitive-info-colors-info-100: #ffffffff;
+  --primitive-warning-colors-warning-0: #000000ff;
+  --primitive-warning-colors-warning-10: #301f03ff;
+  --primitive-warning-colors-warning-20: #5f3f07ff;
+  --primitive-warning-colors-warning-30: #8f5e0aff;
+  --primitive-warning-colors-warning-40: #bf7e0dff;
+  --primitive-warning-colors-warning-50: #ee9d11ff;
+  --primitive-warning-colors-warning-60: #f2b140ff;
+  --primitive-warning-colors-warning-70: #f5c470ff;
+  --primitive-warning-colors-warning-80: #f8d8a0ff;
+  --primitive-warning-colors-warning-90: #fcebcfff;
+  --primitive-warning-colors-warning-95: #fdf1deff;
+  --primitive-warning-colors-warning-98: #fef7ecff;
+  --primitive-warning-colors-warning-99: #fefbf5ff;
+  --primitive-warning-colors-warning-100: #ffffffff;
+  --primitive-success-colors-success-0: #000000ff;
+  --primitive-success-colors-success-10: #023112ff;
+  --primitive-success-colors-success-20: #036324ff;
+  --primitive-success-colors-success-30: #059435ff;
+  --primitive-success-colors-success-40: #06c647ff;
+  --primitive-success-colors-success-50: #08f759ff;
+  --primitive-success-colors-success-60: #39f97aff;
+  --primitive-success-colors-success-70: #6bfa9bff;
+  --primitive-success-colors-success-80: #9cfcbdff;
+  --primitive-success-colors-success-90: #cefddeff;
+  --primitive-success-colors-success-95: #dcfee8ff;
+  --primitive-success-colors-success-98: #ebfef2ff;
+  --primitive-success-colors-success-99: #f5fff8ff;
+  --primitive-success-colors-success-100: #ffffffff;
+
+  /* 
+   * Color Roles
+   * APPLIED DIRECTLY ON UI (MAPPED TO PRIMITIVES)
+   */
+  --color-role-primary: var(--primitive-key-colors-primary-key-color);
+  --color-role-on-primary: var(--primitive-primary-colors-primary-100);
+  --color-role-primary-container: var(--primitive-primary-colors-primary-90);
+  --color-role-on-primary-container: var(--primitive-primary-colors-primary-30);
+  --color-role-secondary: var(--primitive-secondary-colors-secondary-40);
+  --color-role-on-secondary: var(--primitive-secondary-colors-secondary-100);
+  --color-role-secondary-container: var(--primitive-secondary-colors-secondary-90);
+  --color-role-on-secondary-container: var(--primitive-secondary-colors-secondary-30);
+  --color-role-tertiary: var(--primitive-tertiary-colors-tertiary-40);
+  --color-role-on-tertiary: var(--primitive-tertiary-colors-tertiary-100);
+  --color-role-tertiary-container: var(--primitive-tertiary-colors-tertiary-90);
+  --color-role-on-tertiary-container: var(--primitive-tertiary-colors-tertiary-30);
+  --color-role-neutral: var(--primitive-key-colors-neutral-key-color);
+  --color-role-on-neutral: var(--primitive-neutral-colors-neutral-100);
+  --color-role-neutral-container: var(--primitive-neutral-colors-neutral-90);
+  --color-role-on-neutral-container: var(--primitive-neutral-colors-neutral-30);
+  --color-role-neutral-variant: var(--primitive-key-colors-neutral-variant-key-color);
+  --color-role-on-neutral-variant: var(--primitive-neutral-variant-colors-neutral-variant-100);
+  --color-role-neutral-variant-container: var(--primitive-neutral-variant-colors-neutral-variant-90);
+  --color-role-on-neutral-variant-container: var(--primitive-neutral-variant-colors-neutral-variant-30);
+  --color-role-error: var(--primitive-error-colors-error-40);
+  --color-role-on-error: var(--primitive-error-colors-error-100);
+  --color-role-error-container: var(--primitive-error-colors-error-90);
+  --color-role-on-error-container: var(--primitive-error-colors-error-30);
+  --color-role-info: var(--primitive-info-colors-info-40);
+  --color-role-on-info: var(--primitive-info-colors-info-100);
+  --color-role-info-container: var(--primitive-info-colors-info-90);
+  --color-role-on-info-container: var(--primitive-info-colors-info-30);
+  --color-role-warning: var(--primitive-warning-colors-warning-40);
+  --color-role-on-warning: var(--primitive-warning-colors-warning-100);
+  --color-role-warning-container: var(--primitive-warning-colors-warning-90);
+  --color-role-on-warning-container: var(--primitive-warning-colors-warning-30);
+  --color-role-success: var(--primitive-success-colors-success-40);
+  --color-role-on-success: var(--primitive-success-colors-success-100);
+  --color-role-success-container: var(--primitive-success-colors-success-90);
+  --color-role-on-success-container: var(--primitive-success-colors-success-30);
+  --color-role-surface: var(--primitive-neutral-colors-neutral-98);
+  --color-role-on-surface: var(--primitive-neutral-colors-neutral-10);
+  --color-role-surface-varaint: var(--primitive-neutral-colors-neutral-90);
+  --color-role-on-surface-varaint: var(--primitive-neutral-colors-neutral-30);
+  --color-role-surface-container-highest: var(--primitive-neutral-colors-neutral-90);
+  --color-role-surface-container-high: var(--primitive-neutral-colors-neutral-90);
+  --color-role-surface-container: var(--primitive-neutral-colors-neutral-95);
+  --color-role-surface-container-low: var(--primitive-neutral-colors-neutral-98);
+  --color-role-surface-container-lowest: var(--primitive-neutral-colors-neutral-100);
+  --color-role-inverse-surface: var(--primitive-neutral-colors-neutral-20);
+  --color-role-inverse-on-surface: var(--primitive-neutral-colors-neutral-95);
+  --color-role-surface-tint: var(--primitive-primary-colors-primary-40);
+  --color-role-surface-container-lowest-2: var(--primitive-neutral-colors-neutral-50);
+  --color-role-inverse-on-surface-2: var(--primitive-neutral-colors-neutral-95);
+
+  /* Spacing System */
+  --spacing-no: 0;
+  --spacing-extremely-small: 2px;
+  --spacing-extra-extra-samll: 4px;
+  --spacing-extra-small: 8px;
+  --spacing-medium: 12px;
+  --spacing-base: 16px;
+  --spacing-small-large: 20px;
+  --spacing-large: 24px;
+  --spacing-extra-large: 32px;
+  --spacing-extra-extra-large: 40px;
+  --spacing-very-large: 48px;
+  --spacing-extremely-large: 64px;
+
+  /* Effects / Shadows */
+  --effect-hard-shadow: 4px 6px 8px 0 #00000052;
+  --effect-medium-shadow: 2px 4px 6px 0 #00000047;
+  --effect-soft-shadow: 2px 2px 20px 0 #0000001f;
+
+}
+
+/* 
+ * Typography Classes 
+ * Defines complete type styles to be used as whole classes (DS-6)
+ */
+.typography-display-large {
+  font-family: 'Lora', serif;
+  font-size: 64px;
+  font-weight: 600;
+  line-height: 96px;
+  letter-spacing: -4px;
+}
+
+.typography-display-medium {
+  font-family: 'Lora', serif;
+  font-size: 48px;
+  font-weight: 600;
+  line-height: 72px;
+  letter-spacing: -3px;
+}
+
+.typography-display-small {
+  font-family: 'Lora', serif;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 48px;
+  letter-spacing: -2px;
+}
+
+.typography-headline-large {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 48px;
+  letter-spacing: -1.55px;
+}
+
+.typography-headline-medium {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 42px;
+  letter-spacing: -1.35px;
+}
+
+.typography-headline-small {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 36px;
+  letter-spacing: -1px;
+}
+
+.typography-title-large {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 33px;
+  letter-spacing: -1px;
+}
+
+.typography-title-medium {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  letter-spacing: -0.85px;
+}
+
+.typography-title-small {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 21px;
+  letter-spacing: -0.75px;
+}
+
+.typography-body-large {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 24px;
+  letter-spacing: -0.85px;
+}
+
+.typography-body-medium {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 21px;
+  letter-spacing: -0.75px;
+}
+
+.typography-body-small {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: -0.75px;
+}
+
+.typography-label-large {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 21px;
+  letter-spacing: -0.9px;
+}
+
+.typography-label-medium {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: -0.75px;
+}
+
+.typography-label-small {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 19px;
+  letter-spacing: -0.8px;
+}
+
