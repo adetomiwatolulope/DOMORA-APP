@@ -295,15 +295,35 @@ model Subscription {
 }
 
 model Notification {
-  id        String              @id @default(uuid())
+  id        String                @id @default(uuid())
   userId    String
-  user      User                @relation(fields: [userId], references: [id])
+  user      User                  @relation(fields: [userId], references: [id])
   channel   NotificationChannel
   template  String
+  // REVIEW FIX #14: template variables are persisted so a later delivery
+  // worker can render the exact versioned body (PR-NOT-002) keyed by the
+  // notification id without re-reading caller context.
+  vars      Json?
   sentAt    DateTime?
-  createdAt DateTime            @default(now())
+  createdAt DateTime              @default(now())
+  delivery  NotificationDelivery?
 
   @@index([userId])
+  @@index([sentAt])
+}
+
+// The durable output of the notification delivery worker (Step 5 idempotency):
+// the job id (notificationId) is the primary key of the output. Before a
+// re-run produces anything, it checks this record; if the output already
+// exists under the job id, the second run skips and only marks sentAt.
+model NotificationDelivery {
+  notificationId String                @id
+  notification   Notification          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel        NotificationChannel
+  to             String
+  body           String
+  providerRef    String
+  createdAt      DateTime              @default(now())
 }
 
 model AuditLog {

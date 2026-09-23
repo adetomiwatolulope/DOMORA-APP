@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
 
+# vercel project link metadata (GIT-1: never commit deploy config links)
+.vercel/
+
 # next.js
 .next/
 out/
@@ -30,3 +33,5 @@ Thumbs.db
 *.sqlite
 *.db
 tsconfig.tsbuildinfo
+.vercel
+.env*

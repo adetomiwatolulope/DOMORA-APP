@@ -1,16 +1,14 @@
 import { withHandler } from "@/lib/http";
-import { asRecord, enumValue, requiredString } from "@/lib/validate";
-import { resolveReviewCase, type ResolutionAction } from "@/modules/reports";
-
-const RESOLUTION_ACTIONS = ["NONE", "SUSPEND_LISTING"] as const;
+import { parseBody, parseId, resolveReviewCaseBody } from "@/lib/schemas";
+import { resolveReviewCase } from "@/modules/reports";
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   return withHandler(req, async ({ actor, input }) => {
-    const body = asRecord(input);
-    const result = await resolveReviewCase(id, actor, {
-      resolution: requiredString(body, "resolution"),
-      action: enumValue(body, "action", RESOLUTION_ACTIONS) as ResolutionAction,
+    const body = parseBody(input, resolveReviewCaseBody);
+    const result = await resolveReviewCase(parseId(id, "review case"), actor, {
+      resolution: body.resolution,
+      action: body.action,
     });
     return { data: result };
   });

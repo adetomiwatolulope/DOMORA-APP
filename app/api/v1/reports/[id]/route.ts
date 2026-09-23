@@ -1,11 +1,11 @@
 import { withHandler } from "@/lib/http";
 import { parseId } from "@/lib/schemas";
-import { verificationDocumentUrl } from "@/modules/verification";
+import { getReportById } from "@/modules/reports";
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   return withHandler(req, async ({ actor }) => {
-    const url = await verificationDocumentUrl(parseId(id, "verification request"), actor);
-    return { data: { url } };
+    const report = await getReportById(parseId(id, "report"), actor);
+    return { data: report };
   });
 }

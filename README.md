@@ -120,9 +120,10 @@ Run all gates: `npm run typecheck`, `npm run test`, `npm run build`.
 - `/modules` — ALL business logic, by domain (identity, verification,
   affiliations, listings, reports, audit, notifications, billing[empty at MVP])
 - `/lib` — cross-cutting utilities only (db, storage, geocoding, auth, http,
-  errors, validate). `/lib` never imports `/modules`.
+  errors, schemas). `/lib` never imports `/modules`.
 - `/prisma/schema.prisma` — locked schema, ported verbatim from PRD Section 10
-- `/tests` — per-module business-rule tests
+- `/tests` — per-module business-rule tests (`unit`) and cross-module route
+  tests (`integration`, every endpoint over real handlers)
 
 Every state transition is an explicit, audited, transaction-guarded function
 (e.g. `approveVerification`, `approveListing`, `resolveReviewCase`). Route
@@ -147,35 +148,952 @@ so thresholds and derived fields stay single-writer. All names, emails
 (`*.seed.domora.invalid`), and content are synthetic; document/image keys are
 opaque paths, never real objects.
 
-## API (Phase 1)
+## API reference
 
-| Endpoint | Purpose |
+The public API is versioned and served from `/api/v1` (default base URL
+`http://localhost:3000/api/v1`). It has **19 endpoints** across four resources
+plus the reviewer queue. Every endpoint is exercised end-to-end in
+`tests/integration/api.test.ts`.
+
+Signed-off session cookie: **`Authentication`** is a signed session cookie.
+
+### Authentication
+
+Every endpoint requires a valid session. No public signup/login route exists at
+Phase 1 (the PRD names no auth mechanism — see Open items); sessions are the
+same cookie all mutation endpoints check.
+
+| Attribute | Value |
 | --- | --- |
-| `POST /api/v1/verification-requests` | submit verification (agent/agency/landlord) |
-| `GET /api/v1/verification-requests` | reviewer: pending queue |
-| `POST /api/v1/verification-requests/:id/approve` | reviewer gates account |
-| `POST /api/v1/verification-requests/:id/reject` | reviewer rejects (note required) |
-| `GET /api/v1/verification-requests/:id/document-url` | short-lived pre-signed doc URL |
-| `POST /api/v1/agency-affiliations` | agent requests roster membership |
-| `POST /api/v1/agency-affiliations/:id/accept` | agency admin accepts |
-| `POST /api/v1/agency-affiliations/:id/reject` | agency admin rejects |
-| `POST /api/v1/listings` | create listing (PENDING_REVIEW) |
-| `GET /api/v1/listings` | search active listings |
-| `GET /api/v1/listings/:id` | listing detail (visibility-gated) |
-| `POST /api/v1/listings/:id` | reviewer approves listing |
-| `POST /api/v1/reports` | seeker files a report |
-| `GET /api/v1/review-queue` | reviewer: open cases |
-| `POST /api/v1/review-cases/:id/resolve` | reviewer resolves (may suspend listing) |
+| Cookie name | `domora_session` |
+| Value | HS256 JWT signed with `SESSION_SECRET`, payload `{ userId, role, jti }` |
+| Liveness | 7 days from issue (`SESSION_MAX_AGE_SECONDS` = 7 days) |
+| Flags | `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` in production |
 
-All state-changing requests require an allowed `Origin` header (SEC-9) and a
-session cookie. There is intentionally no public signup/login endpoint and no
-way for a public path to create `PLATFORM_REVIEWER` or `SUPER_ADMIN` accounts.
+Send it like any cookie: `-b "domora_session=<token>"`. A missing, expired, or
+tampered token is a `401 UNAUTHORIZED`.
+
+For local development, mint a token for a seeded user with `createSession()` in
+`lib/auth.ts` (the exact call the integration tests use):
+
+```ts
+import { createSession } from "@/lib/auth";
+const token = await createSession({ userId: "<uuid>", role: "PLATFORM_REVIEWER" }, tokenId);
+// set the cookie: domora_session=<token>
+```
+
+**Origin / CSRF header:** every non-`GET`/`HEAD` request must also send an
+`Origin` header equal to `APP_ORIGIN` (default `http://localhost:3000`). A
+missing or mismatched origin is `403 FORBIDDEN "Untrusted request origin"`
+(SEC-9). All curl examples below include it.
+
+### Response & error envelopes
+
+Every successful response is **HTTP 200** — creates, actions, and approvals
+included — with the result resource under `data`; there is no 201/204 special
+casing so a client handles one status for success.
+
+```json
+{ "data": { "id": "a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d", "status": "APPROVED" } }
+```
+
+Every **list** response adds `meta` with exactly four keys:
+
+```json
+{
+  "data": [],
+  "meta": { "total": 340, "limit": 20, "offset": 0, "hasMore": true }
+}
+```
+
+- `total` — number of rows matching the filter (not the page size)
+- `limit` / `offset` — the page actually applied (`limit` reflects clamping)
+- `hasMore` — `offset + items.length < total`
+
+Every error is `{ "error": { "code", "message" } }` with an honest HTTP status:
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `BAD_REQUEST` | malformed JSON, invalid query parameter, or malformed path id (not a UUID) |
+| 401 | `UNAUTHORIZED` | missing/invalid session |
+| 403 | `FORBIDDEN` | role/ownership denial — never a filtered result (PR-ADM-001) |
+| 404 | `NOT_FOUND` | unknown resource id |
+| 409 | `CONFLICT` | illegal state transition (e.g. already-decided record, DB-6) |
+| 422 | `VALIDATION_ERROR` | body failed server-side schema validation |
+| 429 | `RATE_LIMITED` | reserved; no rate limiter wired at MVP |
+| 500 | `INTERNAL_ERROR` | fail-closed seam (storage/geocoding) or unexpected fault |
+
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "An approved verification is required before creating listings (PR-VER-001)"
+  }
+}
+```
+
+Request bodies and responses are `application/json`.
+
+### Validation (single source, Step 4)
+
+Every request body, query parameter, and path identifier is validated by a zod
+schema in `lib/schemas.ts` — routes call `parseBody` / `parseQuery` /
+`parseId` and never hand-roll checks. Modules keep their business-rule asserts
+as defense in depth.
+
+| Input | Result |
+| --- | --- |
+| `limit` larger than the configured max (100) | **clamped** to 100 (a `limit=5000` is never honoured) |
+| `limit` of 0 / negative / non-numeric | 400 |
+| negative `offset` | 400, message names `offset` |
+| unknown `sort` value | 400, message names the allowed values (never silently ignored) |
+| malformed path id (not a UUID) | 400 (ids are `String @default(uuid())` in the locked schema) |
+| well-formed but unknown id | 404 |
+| missing/invalid required body field | 422, message names the field (e.g. `Field "price" is required`) |
+| malformed JSON | 400 |
+
+### Common list parameters
+
+Applies to `GET` collection endpoints (`/verification-requests`,
+`/listings`, `/reports`, `/review-queue`). Endpoint-specific filters are listed
+on each endpoint. Unknown query parameters are ignored.
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `limit` | integer | `20` | ≥ 1; anything above 100 is clamped to `100`; 0/negative/non-integer → 400 |
+| `offset` | integer | `0` | ≥ 0; negative → 400 |
+| `sort` | string enum | per endpoint | invalid value → 400 naming the allowed values |
+| `order` | `asc` \| `desc` | `desc` (`asc` on `/review-queue`) | |
+
+### Endpoint index
+
+| # | Method | Path | Access summary |
+| --- | --- | --- | --- |
+| 1 | `POST` | `/verification-requests` | AGENT · AGENCY_ADMIN · LANDLORD |
+| 2 | `GET` | `/verification-requests` | reviewers (all) · applicants (own) |
+| 3 | `GET` | `/verification-requests/{id}` | applicant owner · reviewer |
+| 4 | `POST` | `/verification-requests/{id}/approve` | PLATFORM_REVIEWER |
+| 5 | `POST` | `/verification-requests/{id}/reject` | PLATFORM_REVIEWER |
+| 6 | `GET` | `/verification-requests/{id}/document-url` | applicant owner · reviewer |
+| 7 | `POST` | `/agency-affiliations` | AGENT |
+| 8 | `POST` | `/agency-affiliations/{id}/accept` | AGENCY_ADMIN (own agency) |
+| 9 | `POST` | `/agency-affiliations/{id}/reject` | AGENCY_ADMIN (own agency) |
+| 10 | `POST` | `/listings` | AGENT · AGENCY_ADMIN · LANDLORD (verified) |
+| 11 | `GET` | `/listings` | VIEW_ANY_LISTING roles (see §11) |
+| 12 | `GET` | `/listings/{id}` | public (ACTIVE) / owner / reviewer |
+| 13 | `POST` | `/listings/{id}/approve` | PLATFORM_REVIEWER |
+| 14 | `POST` | `/reports` | SEEKER |
+| 15 | `GET` | `/reports` | seeker (own) · reviewer (all) |
+| 16 | `GET` | `/reports/{id}` | reporter · reviewer |
+| 17 | `GET` | `/review-queue` | PLATFORM_REVIEWER |
+| 18 | `GET` | `/review-cases/{id}` | PLATFORM_REVIEWER |
+| 19 | `POST` | `/review-cases/{id}/resolve` | PLATFORM_REVIEWER |
+
+---
+
+### 1. `POST /api/v1/verification-requests`
+
+Submit a verification request. The account role cannot change here — only
+`AGENT`, `AGENCY_ADMIN`, or `LANDLORD` may apply (PR-VER-001); the request
+starts `PENDING`.
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `documentKey` | string | ✓ | must start with `docs/` and the object must already exist in storage (UP-9); it is never returned |
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/verification-requests \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{"documentKey": "docs/licenses/agent-57e1c9.pdf"}'
+```
+
+**Response `200`:** the new request (`documentKey` is never exposed, SEC-6).
+
+```json
+{
+  "data": {
+    "id": "a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d",
+    "userId": "cafe1234-abcd-4ef0-8123-456789abcdef",
+    "status": "PENDING",
+    "reviewNote": null,
+    "reviewedById": null,
+    "createdAt": "2026-09-23T09:00:00.000Z",
+    "reviewedAt": null
+  }
+}
+```
+
+**Errors:** `401`; `403` (role); `422` (missing documentKey); `500` (storage seam).
+
+---
+
+### 2. `GET /api/v1/verification-requests`
+
+List verification requests. Reviewers (`PLATFORM_REVIEWER`, `SUPER_ADMIN`) see
+every submission; an applicant sees only their own. Any other role → `403`.
+
+**Query parameters** (plus the common four):
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `sort` | `createdAt` \| `reviewedAt` | `createdAt` | |
+| `status` | `PENDING` \| `APPROVED` \| `REJECTED` | — | |
+| `userId` | UUID | — | reviewer-only filter; an applicant passing someone else's id → `403` |
+
+**Example:**
+
+```bash
+curl -sS "http://localhost:3000/api/v1/verification-requests?status=PENDING&limit=5&offset=0&order=desc" \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": [
+    {
+      "id": "a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d",
+      "userId": "cafe1234-abcd-4ef0-8123-456789abcdef",
+      "status": "PENDING",
+      "reviewNote": null,
+      "reviewedById": null,
+      "createdAt": "2026-09-23T09:00:00.000Z",
+      "reviewedAt": null
+    }
+  ],
+  "meta": { "total": 1, "limit": 5, "offset": 0, "hasMore": false }
+}
+```
+
+**Errors:** `401`; `403`; `400` (bad query parameter).
+
+---
+
+### 3. `GET /api/v1/verification-requests/{id}`
+
+Detail of one request. Accessible to the applicant who owns it or to
+`PLATFORM_REVIEWER` / `SUPER_ADMIN`.
+
+**Query parameters:** none. **Path parameter:** `id` (UUID).
+
+**Example:**
+
+```bash
+curl -sS http://localhost:3000/api/v1/verification-requests/a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** same shape as §2 items.
+
+```json
+{
+  "data": {
+    "id": "a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d",
+    "userId": "cafe1234-abcd-4ef0-8123-456789abcdef",
+    "status": "APPROVED",
+    "reviewNote": null,
+    "reviewedById": "36363636-2222-4222-8222-111122223333",
+    "createdAt": "2026-09-23T09:00:00.000Z",
+    "reviewedAt": "2026-09-23T09:10:00.000Z"
+  }
+}
+```
+
+**Errors:** `400` (malformed id); `401`; `403` (not the owner, not a reviewer); `404`.
+
+---
+
+### 4. `POST /api/v1/verification-requests/{id}/approve`
+
+Reviewer approves a request (PR-VER-002 — no other code path can set
+`APPROVED`). Flips the applicant's profile `verificationStatus` to `APPROVED`,
+writes the audit log, and queues a notification.
+
+**Query parameters:** none. **Body:** none.
+
+**Access:** `PLATFORM_REVIEWER` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/verification-requests/a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d/approve \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the decided request (status `APPROVED`, `reviewedById` and
+`reviewedAt` set).
+
+**Errors:** `401`; `403` (non-reviewer); `400` (malformed id); `404`;
+`409 CONFLICT` — already decided (DB-6, no in-place edits).
+
+---
+
+### 5. `POST /api/v1/verification-requests/{id}/reject`
+
+Reviewer rejects a request (PR-VER-004 — a rejection can never be silent).
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `reviewNote` | string | ✓ | persisted reason; missing/blank → `422` |
+
+**Access:** `PLATFORM_REVIEWER` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/verification-requests/a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d/reject \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{"reviewNote": "Identity document is expired."}'
+```
+
+**Response `200`:** the decided request (status `REJECTED`, `reviewNote` filled).
+
+**Errors:** `401`; `403`; `400`; `404`; `409` (already decided); `422` (missing reviewNote).
+
+---
+
+### 6. `GET /api/v1/verification-requests/{id}/document-url`
+
+Short-lived, pre-signed URL for the applicant's verification document (SEC-6 /
+Technical Requirements). Only the owning applicant or a reviewer can fetch it;
+the expiry is short and the URL is never stored or cached.
+
+**Query parameters:** none. **Path parameter:** `id` (UUID).
+
+**Example:**
+
+```bash
+curl -sS http://localhost:3000/api/v1/verification-requests/a3f1c2d4-9b8e-4a7f-8c3d-5e6f7a8b9c0d/document-url \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": {
+    "url": "https://storage.example/domora-docs/licenses/agent-57e1c9.pdf?X-Amz-Expires=300&X-Amz-Signature=..."
+  }
+}
+```
+
+**Errors:** `400`; `401`; `403` (not owner/reviewer); `404`.
+
+---
+
+### 7. `POST /api/v1/agency-affiliations`
+
+An agent requests to join an agency's roster (PR-VER-003 — only the agency side
+can ever set `AgentProfile.agencyId`).
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `agentId` | UUID | ✓ | must equal the caller's own `AgentProfile.id`, else `403` |
+| `agencyId` | UUID | ✓ | must exist, else `404` |
+
+**Access:** `AGENT` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/agency-affiliations \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{"agentId": "5555cccc-4444-4333-8222-111100009999", "agencyId": "6666dddd-5555-4444-8333-222211110000"}'
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": {
+    "id": "7777bbbb-6666-4555-8444-333322221111",
+    "agentId": "5555cccc-4444-4333-8222-111100009999",
+    "agencyId": "6666dddd-5555-4444-8333-222211110000",
+    "status": "PENDING",
+    "createdAt": "2026-09-23T09:05:00.000Z",
+    "resolvedAt": null
+  }
+}
+```
+
+**Errors:** `401`; `403` (role, or a `agentId` that is not the caller's own
+profile); `404` (agency); `409` (a `PENDING`/`ACCEPTED` affiliation already
+exists between the two); `422` (missing/invalid body).
+
+---
+
+### 8. `POST /api/v1/agency-affiliations/{id}/accept`
+
+Agency admin accepts a pending request. This is the **only** writer of
+`AgentProfile.agencyId` (DB-8): accepting makes the agent part of the roster.
+
+**Query parameters:** none. **Body:** none.
+
+**Access:** `AGENCY_ADMIN` who administers the affiliation's agency (else `403`).
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/agency-affiliations/7777bbbb-6666-4555-8444-333322221111/accept \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the affiliation (status `ACCEPTED`, `resolvedAt` set).
+
+**Errors:** `401`; `403` (non-admin, or not this agency's admin); `400`;
+`404`; `409` (already decided).
+
+---
+
+### 9. `POST /api/v1/agency-affiliations/{id}/reject`
+
+Agency admin rejects a pending request. Same access and guards as `accept`;
+the agent is not added to the roster.
+
+**Query parameters:** none. **Body:** none.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/agency-affiliations/7777bbbb-6666-4555-8444-333322221111/reject \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the affiliation (status `REJECTED`, `resolvedAt` set).
+
+**Errors:** same as §8.
+
+---
+
+### 10. `POST /api/v1/listings`
+
+Create a listing. Two gates, intentionally separate: the account must be a
+verifiable role **and** its verification must be `APPROVED` (PR-VER-001, checked
+at the data layer). A listing is **never** created `ACTIVE` — it enters
+`PENDING_REVIEW` and waits for a reviewer (PR-LST-002).
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `title` | string | ✓ | 3–200 characters |
+| `price` | integer | ✓ | positive whole number in the smallest currency unit (never a decimal/float) |
+| `address` | string | ✓ | geo-coded from here when lat/lng are omitted |
+| `propertyType` | `APARTMENT` \| `HOUSE` \| `DUPLEX` \| `LAND` \| `COMMERCIAL` \| `OTHER` | ✓ | |
+| `images` | string[] | ✓ | ≥ 1 opaque key; each must start with `images/` and exist in storage (UP-9) |
+| `country` | string | ✗ | stored as-is; used by the search filter |
+| `latitude` | number | ✗ | −90..90; stored verbatim if both lat+lng given |
+| `longitude` | number | ✗ | −180..180; the only live maps call (geocoding) runs at creation |
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/listings \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{
+        "title": "2-bed flat in Ikoyi",
+        "price": 1500000,
+        "address": "12 Bourdillon Road, Ikoyi",
+        "country": "NG",
+        "propertyType": "APARTMENT",
+        "images": ["images/listings/58f1a9ab-11ed-4d33-9a21-1c2d3e4f5a6b.jpeg"],
+        "latitude": 6.4482,
+        "longitude": 3.4355
+      }'
+```
+
+**Response `200`:** the listing, created `PENDING_REVIEW`. `images` returns
+id/uploadedAt only — storage keys are never exposed.
+
+```json
+{
+  "data": {
+    "id": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+    "title": "2-bed flat in Ikoyi",
+    "price": 1500000,
+    "address": "12 Bourdillon Road, Ikoyi",
+    "latitude": 6.4482,
+    "longitude": 3.4355,
+    "country": "NG",
+    "propertyType": "APARTMENT",
+    "status": "PENDING_REVIEW",
+    "hasOpenReports": false,
+    "createdAt": "2026-09-23T10:00:00.000Z",
+    "images": [
+      { "id": "58f1a9ab-11ed-4d33-9a21-1c2d3e4f5a6b", "uploadedAt": "2026-09-23T09:59:00.000Z" }
+    ]
+  }
+}
+```
+
+**Errors:** `401`; `403` (role, or "An approved verification is required before
+creating listings"); `422`; `500` (geocoding/storage seam blocks).
+
+---
+
+### 11. `GET /api/v1/listings`
+
+Search and page listings. Default is a public search over **`ACTIVE`** listings
+only; a listing with open reports **stays visible** (PR-LST-003) — nothing
+filters on report count.
+
+**Query parameters** (plus the common four):
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `sort` | `createdAt` \| `price` \| `title` | `createdAt` | |
+| `propertyType` | enum (as §10) | — | exact match |
+| `status` | `DRAFT` \| `PENDING_REVIEW` \| `ACTIVE` \| `SUSPENDED` | `ACTIVE` | absent or `ACTIVE` → public search; any **other** status requires `PLATFORM_REVIEWER`/`SUPER_ADMIN` or the owning profile, else `403` (never a silent downgrade) |
+| `country` | string | — | exact match on stored value |
+| `minPrice` | integer ≥ 0 | — | price filter (smallest currency unit) |
+| `maxPrice` | integer ≥ 0 | — | |
+| `latitude` | number (−90..90) | — | proximity needs **both** lat+lng |
+| `longitude` | number (−180..180) | — | |
+| `radiusKm` | number ≥ 0.1 | `5`, capped at `50` | applies only when lat+lng are both present; range scan on stored coordinates, no live maps call |
+
+**Access:** `VIEW_ANY_LISTING` = SEEKER · AGENT · AGENCY_ADMIN · LANDLORD ·
+PLATFORM_REVIEWER. Note: `SUPER_ADMIN` is **not** in that permission — a super
+admin gets `403` here (PR-ADM-001 matrix, never a filtered result).
+
+**Example:**
+
+```bash
+curl -sS "http://localhost:3000/api/v1/listings?propertyType=APARTMENT&country=NG&minPrice=1000000&maxPrice=3000000&sort=price&order=asc&limit=10&offset=0" \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": [
+    {
+      "id": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+      "title": "2-bed flat in Ikoyi",
+      "price": 1500000,
+      "address": "12 Bourdillon Road, Ikoyi",
+      "latitude": 6.4482,
+      "longitude": 3.4355,
+      "country": "NG",
+      "propertyType": "APARTMENT",
+      "status": "ACTIVE",
+      "hasOpenReports": false,
+      "createdAt": "2026-09-23T10:00:00.000Z",
+      "images": [{ "id": "58f1a9ab-11ed-4d33-9a21-1c2d3e4f5a6b", "uploadedAt": "2026-09-23T09:59:00.000Z" }]
+    }
+  ],
+  "meta": { "total": 1, "limit": 10, "offset": 0, "hasMore": false }
+}
+```
+
+**Errors:** `401`; `403` (role, or a non-active status filter without reviewer
+scope/ownership); `400` (bad parameter, e.g. `radiusKm` < 0.1).
+
+---
+
+### 12. `GET /api/v1/listings/{id}`
+
+Single listing detail. An `ACTIVE` listing is public; any other status is
+visible only to reviewers or the listing's own owner side — otherwise `403`
+(UP-4). `SUPER_ADMIN` is not in `VIEW_ANY_LISTING` → 403.
+
+**Query parameters:** none. **Path parameter:** `id` (UUID).
+
+**Example:**
+
+```bash
+curl -sS http://localhost:3000/api/v1/listings/d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80 \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** same shape as §11 items.
+
+**Errors:** `400`; `401`; `403`; `404`.
+
+---
+
+### 13. `POST /api/v1/listings/{id}/approve`
+
+Platform reviewer moves a `PENDING_REVIEW` listing to `ACTIVE` (PR-LST-002).
+This is a **separate gate** from account verification — account approval alone
+never activates a listing.
+
+**Query parameters:** none. **Body:** none.
+
+**Access:** `PLATFORM_REVIEWER` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/listings/d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80/approve \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the listing with `status: "ACTIVE"`.
+
+**Errors:** `401`; `403`; `400`; `404`; `409` (cannot reach `ACTIVE` from its
+current status — e.g. already approved or suspended).
+
+---
+
+### 14. `POST /api/v1/reports`
+
+A seeker files a report against a listing or an account (PR-REP-001 / PR-BOK-003:
+every report enters the same review queue — there is no private resolution
+path). Reaching 3+ open reports on the same target inside the rolling 30-day
+window creates a `ReviewCase` in the queue (PR-REP-002) — it never
+auto-suspends anything.
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `targetType` | `LISTING` \| `PROFILE` | ✓ | |
+| `listingId` | UUID | when `LISTING` | required iff `targetType=LISTING` |
+| `targetUserId` | UUID | when `PROFILE` | required iff `targetType=PROFILE` |
+| `reason` | string | ✓ | 10–2000 characters |
+
+**Access:** `SEEKER` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/reports \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{
+        "targetType": "LISTING",
+        "listingId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+        "reason": "The listing photos do not match the unit shown at inspection."
+      }'
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": {
+    "report": {
+      "id": "1111aaaa-2222-4333-8444-555566667777",
+      "reporterId": "cafe1234-abcd-4ef0-8123-456789abcdef",
+      "targetType": "LISTING",
+      "listingId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+      "targetUserId": null,
+      "reason": "The listing photos do not match the unit shown at inspection.",
+      "createdAt": "2026-09-23T11:00:00.000Z"
+    },
+    "reviewCaseId": null
+  }
+}
+```
+
+`reviewCaseId` is non-null when this report pushed the target over the
+threshold and a case was opened.
+
+**Errors:** `401`; `403` (non-seeker); `404` (target not found); `422` (missing
+field, short reason, `listingId` on a `PROFILE` report etc.).
+
+---
+
+### 15. `GET /api/v1/reports`
+
+List reports: a reviewer sees everything; a seeker sees only their own.
+
+**Query parameters** (plus the common four):
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `sort` | `createdAt` | `createdAt` | the only sortable field |
+| `targetType` | `LISTING` \| `PROFILE` | — | |
+| `reporterId` | UUID | — | reviewer-only filter; a seeker passing someone else's id → `403` |
+| `resolved` | `true` \| `false` (string) | — | `true` = the report's case is `RESOLVED`; `false` = open (no case, or case not resolved) |
+
+**Example:**
+
+```bash
+curl -sS "http://localhost:3000/api/v1/reports?resolved=false&targetType=LISTING&limit=20&offset=0" \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** `data` of report items (§14 shape, without the
+`reviewCaseId` wrapper) plus `meta`.
+
+**Errors:** `401`; `403`; `400`.
+
+---
+
+### 16. `GET /api/v1/reports/{id}`
+
+Single report. Accessible to the reporting seeker or a reviewer.
+
+**Query parameters:** none. **Path parameter:** `id` (UUID).
+
+**Example:**
+
+```bash
+curl -sS http://localhost:3000/api/v1/reports/1111aaaa-2222-4333-8444-555566667777 \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the report item (§14 `report` shape).
+
+**Errors:** `400`; `401`; `403`; `404`.
+
+---
+
+### 17. `GET /api/v1/review-queue`
+
+The reviewer's queue. Defaults to unresolved cases (`OPEN` + `UNDER_REVIEW`)
+in FIFO order (oldest first). Includes the underlying report's context.
+
+**Query parameters** (plus the common four):
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `sort` | `createdAt` | `createdAt` | the only sortable field |
+| `order` | `asc` \| `desc` | `asc` | FIFO — the queue is oldest-first |
+| `status` | `OPEN` \| `UNDER_REVIEW` \| `RESOLVED` | open cases | absent → only non-resolved cases |
+| `targetType` | `LISTING` \| `PROFILE` | — | |
+
+**Access:** `PLATFORM_REVIEWER` only (`SUPER_ADMIN` → `403`).
+
+**Example:**
+
+```bash
+curl -sS "http://localhost:3000/api/v1/review-queue?status=OPEN&targetType=LISTING&limit=10&offset=0" \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:**
+
+```json
+{
+  "data": [
+    {
+      "id": "9999eeee-8888-4777-8666-555544443333",
+      "reportId": "1111aaaa-2222-4333-8444-555566667777",
+      "status": "OPEN",
+      "resolution": null,
+      "resolvedById": null,
+      "createdAt": "2026-09-23T11:00:00.000Z",
+      "resolvedAt": null,
+      "targetType": "LISTING",
+      "listingId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f80",
+      "targetUserId": null,
+      "reason": "The listing photos do not match the unit shown at inspection."
+    }
+  ],
+  "meta": { "total": 1, "limit": 10, "offset": 0, "hasMore": false }
+}
+```
+
+**Errors:** `401`; `403`; `400`.
+
+---
+
+### 18. `GET /api/v1/review-cases/{id}`
+
+One review case (same expanded shape as §17 items).
+
+**Query parameters:** none. **Path parameter:** `id` (UUID).
+
+**Access:** `PLATFORM_REVIEWER` only.
+
+**Example:**
+
+```bash
+curl -sS http://localhost:3000/api/v1/review-cases/9999eeee-8888-4777-8666-555544443333 \
+  -b "domora_session=$SESSION"
+```
+
+**Response `200`:** the case item (§17 shape).
+
+**Errors:** `400`; `401`; `403`; `404`.
+
+---
+
+### 19. `POST /api/v1/review-cases/{id}/resolve`
+
+Resolve a review case (PR-REP-003). The resolution record is authoritative and
+is never edited afterwards (DB-6) — a correction is a new case. When
+`action=SUSPEND_LISTING`, the suspension is applied **in the same transaction**
+as the resolution record (Q3#11).
+
+**Query parameters:** none.
+
+**Request body:**
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `resolution` | string | ✓ | the reviewer's decision; missing/blank → `422` |
+| `action` | `NONE` \| `SUSPEND_LISTING` | optional (default `NONE`) | `SUSPEND_LISTING` requires the case report to target a listing, else `422`; account suspension is out of scope until the PRD defines it |
+
+**Access:** `PLATFORM_REVIEWER` only.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:3000/api/v1/review-cases/9999eeee-8888-4777-8666-555544443333/resolve \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:3000' \
+  -b "domora_session=$SESSION" \
+  -d '{"resolution": "Misrepresentation confirmed; listing suspended.", "action": "SUSPEND_LISTING"}'
+```
+
+**Response `200`:** the resolved case (case fields only).
+
+```json
+{
+  "data": {
+    "id": "9999eeee-8888-4777-8666-555544443333",
+    "reportId": "1111aaaa-2222-4333-8444-555566667777",
+    "status": "RESOLVED",
+    "resolution": "Misrepresentation confirmed; listing suspended.",
+    "resolvedById": "36363636-2222-4222-8222-111122223333",
+    "createdAt": "2026-09-23T11:00:00.000Z",
+    "resolvedAt": "2026-09-23T12:30:00.000Z"
+  }
+}
+```
+
+**Errors:** `401`; `403`; `400`; `404`; `409` (already resolved); `422`
+(missing resolution, or `SUSPEND_LISTING` on a non-listing case).
+
+---
+
+### Idempotent delivery work (Step 5)
+
+Background work is idempotent by construction even though Phase 1 exposes no
+scheduler. `modules/notifications/deliver.ts`:
+
+1. **The output is keyed by the job id.** The deliverable (a rendered message
+   artifact) is stored in `NotificationDelivery`, whose primary key
+   **is `notificationId`** — the `Notification` row (the job) owns its output.
+2. **Check-before-produce.** Before touching the messenger, the worker
+   re-checks whether that keyed output already exists or the job is already
+   finished (`sentAt`); if so it skips production entirely.
+3. **Produce-then-ack.** The job is stamped `sentAt` (the durable "succeeded"
+   marker) only after the output is recorded, via a guarded
+   `UPDATE ... WHERE id = ? AND sentAt IS NULL`.
+
+A crash between send and ack leaves the keyed output behind; the retry finds it,
+produces **nothing new**, and only finishes the job. Template variables are
+persisted on the `Notification` row (`vars`, PR-NOT-002) so a late delivery
+still renders the exact approved message.
+
+## Design decisions
+
+### Why these resources were chosen
+
+Phase 1 scope (PRD Section 13) is the verification + listings core, and each
+PRD flow maps to exactly one resource and one explicit transition:
+
+| Flow | Resource(s) | Explicit transition |
+| --- | --- | --- |
+| Apply to be verified | `VerificationRequest` | `submit → PENDING` |
+| Review a verification | `VerificationRequest` | `approve` / `reject` (PR-VER-002/004) |
+| List a property | `Listing` (+ `ListingImage`) | `create → PENDING_REVIEW`, then `approve → ACTIVE` (PR-LST-002) |
+| Search/browse | `Listing` | none — status/visibility scoping only |
+| Report a problem | `Report` | `create`, threshold opens `ReviewCase` |
+| Resolve reports | `ReviewCase` | `resolve`, may `suspended` the listing |
+
+Keeping the five first-class resources means each locked-schema status machine
+has a single home — a rule like "listing approval is a separate gate from
+account verification" has exactly one place to be enforced and tested.
+Supporting models (`AgentProfile`, `AgencyProfile`, `LandlordProfile`,
+`ListingImage`, `AuditLog`, `Notification`) are intentionally not first-class:
+they are written or read *through* the five. `AgencyAffiliation` is the single
+extra surface — `request` / `accept` / `reject` — because PR-VER-003's
+two-party acceptance is a guarded transition (only the agency side can write
+`AgentProfile.agencyId`), not a browse flow, so Phase 1 deliberately ships no
+affiliation list/detail endpoints.
+
+### Why generated identifiers are used
+
+The locked schema mandates `String @default(uuid())`, and the API treats every
+path id and cross-reference as a canonical UUID v4: server-generated, never
+client-supplied, never sequential. This buys four things: **non-enumerability**
+(a leaked id leaks nothing else — there is no "next" id to guess and no
+creation-order information), **collision safety** across distributed writers,
+**no client squatting** (a caller cannot pre-choose an id), and **one validation
+contract** — any non-UUID value is malformed at the edge (`400`) rather than a
+guess about intent in the module layer.
+
+### Why offset pagination was chosen
+
+All four list consumers are bounded, dashboard/queue-style pages at current
+volume (hundreds to low thousands of rows): the reviewer queue (FIFO cases), a
+provider's own listings, a seeker's own reports. Two properties decided it:
+offset pagination yields an exact `total` **and** `hasMore`, which the reviewer
+console and pagination UI need directly; and it supports arbitrary page
+navigation (`offset=40, limit=20` → "page 3") with the same four-key `meta`
+shape on every list endpoint — one client component pages every list. A cursor
+(keyset) would be the better fit only for unbounded, high-churn, feed-like
+streams, which Phase 1 has none of; it would also cost the exact `total` count.
+At these volumes a `limit ≤ 100` offset scan over an indexed sort field is
+cheap, and if a feed consumer ever appears, a cursor can be introduced
+per-resource inside the same envelope without breaking the documented contract.
+
+### Why this envelope shape
+
+Success and failure are structurally distinct, so a client can never guess
+whether a payload is a resource, a list, or an error:
+
+- **Success** — `{ "data": ... }`. All state changes (creates, approvals,
+  resolutions) return `200` with the resulting resource under `data`; there is
+  no 201/204 special-casing to branch on. Fields can be added to `data` over
+  time without breaking the envelope.
+- **List pagination is quarantined in `meta`** — `{ total, limit, offset,
+  hasMore }` — so the `data` payload stays a plain array of the resource type,
+  and every list endpoint shares one `meta` contract.
+- **Error** — `{ "error": { "code", "message" } }`. `code` is machine-readable
+  and switchable; `message` is human-readable for logs and support; the HTTP
+  status remains the primary transport signal and `code` mirrors it (403 is
+  always a real denial, never a filtered result — PR-ADM-001).
+
+This mirrors the "one envelope, honest status" contract used throughout: a
+failing input is never a 500, and a role denial is never a truncated success.
 
 ## Open items (recorded, not silently decided)
 
 - **Auth mechanism**: PRD names none and `country`/login flows are unaddressed.
   We use HttpOnly SameSite=Lax HS256 session cookies with a regenerated session
   id per login; that is a working assumption until Section 14 resolves it.
+- **Login route**: there is intentionally no `POST /login` at Phase 1 (no PRD
+  requirement defines one). The API is exercised with sessions minted server-side
+  via `createSession()` in `lib/auth`.
 - **Storage provider** and **geocoding provider** are unnamed in the PRD; both
   seams fail closed until named. Tests inject fakes.
 - **Prisma 6.19 pinned** because PRD Section 10 locks `prisma-client-js`;

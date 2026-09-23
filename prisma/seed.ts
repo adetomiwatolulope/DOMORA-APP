@@ -18,10 +18,10 @@ import { createReport } from "@/modules/reports";
 //   User              454  (150 seekers + 100 agents + 100 agency admins
 //                           + 100 landlords + 3 reviewers + 1 super admin)
 //   VerificationRequest 300 (one per verifiable account)
-//   Listing             400
-//   ListingImage        800 (sub-resource, 2 per listing)
-//   Report             1250 (1200 listing-targeted + 50 profile-targeted)
-//   ReviewCase          400 (auto-opened by the report module per threshold)
+//   Listing               2
+//   ListingImage          4 (sub-resource, 2 per listing)
+//   Report               10 (6 listing-targeted + 4 profile-targeted)
+//   ReviewCase            2 (auto-opened by the report module per threshold)
 //
 // Rule compliance:
 //   DB-13: no APPROVED VerificationRequest and no ACTIVE Listing is created.
@@ -37,10 +37,10 @@ const AGENCY_ADMINS = 100;
 const LANDLORDS = 100;
 const REVIEWERS = 3;
 const SUPER_ADMINS = 1;
-const LISTINGS = 400;
+const LISTINGS = 2;
 const IMAGES_PER_LISTING = 2;
 const REPORTS_PER_LISTING = 3;
-const PROFILE_REPORTS = 50;
+const PROFILE_REPORTS = 4;
 
 const SEED_PASSWORD = "domora-seed-pass";
 

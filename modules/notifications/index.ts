@@ -79,6 +79,9 @@ export async function notify(
       userId: input.userId,
       channel: input.channel ?? "IN_APP",
       template: `${template.id}@v${template.version}`,
+      // REVIEW FIX #14: substitution inputs are stored so the delivery worker
+      // renders the body without re-reading the caller's context.
+      vars: input.vars as Prisma.InputJsonValue,
     },
   });
 }

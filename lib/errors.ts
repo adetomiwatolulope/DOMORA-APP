@@ -4,6 +4,8 @@ export type ErrorKind =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "validation"
+  | "rate_limited"
   | "config";
 
 export class ApiError extends Error {
@@ -35,6 +37,17 @@ export class ApiError extends Error {
 
   static conflict(message = "Conflict"): ApiError {
     return new ApiError("conflict", 409, message);
+  }
+
+  // Step 3: request-body/schema failures on a well-formed request use 422
+  // (cf. 400, which is reserved for malformed requests and query params).
+  static validation(message: string): ApiError {
+    return new ApiError("validation", 422, message);
+  }
+
+  // Reserved for the rate limiter's 429 (not wired to a limiter at MVP).
+  static rateLimited(message = "Too many requests"): ApiError {
+    return new ApiError("rate_limited", 429, message);
   }
 
   static config(message: string): ApiError {

@@ -5,7 +5,7 @@ import { geocoder, type Geocoder } from "@/lib/geocoding";
 import { storage, type StorageService } from "@/lib/storage";
 import { writeAuditLog, AUDIT_ACTIONS } from "@/modules/audit";
 import { assertAllowed } from "@/modules/identity/permissions";
-import type { Actor, AuditMeta } from "@/modules/verification";
+import type { Actor, AuditMeta, ListResult } from "@/modules/verification";
 
 export interface ListingImageInfo {
   id: string;
@@ -128,21 +128,21 @@ export async function createListing(
 
   const title = input.title?.trim();
   if (!title || title.length < 3 || title.length > 200) {
-    throw ApiError.badRequest("title is required (3-200 characters)");
+    throw ApiError.validation("title is required (3-200 characters)");
   }
   if (!Number.isInteger(input.price) || input.price <= 0) {
-    throw ApiError.badRequest("price must be a positive integer in the smallest currency unit");
+    throw ApiError.validation("price must be a positive integer in the smallest currency unit");
   }
   const address = input.address?.trim();
-  if (!address) throw ApiError.badRequest("address is required");
+  if (!address) throw ApiError.validation("address is required");
   if (!Object.values(PropertyType).includes(input.propertyType)) {
-    throw ApiError.badRequest("propertyType is invalid");
+    throw ApiError.validation("propertyType is invalid");
   }
 
   const storageService = deps.storage ?? storage;
   for (const imageKey of input.images) {
     if (!imageKey.startsWith("images/")) {
-      throw ApiError.badRequest("image keys must be stored under images/");
+      throw ApiError.validation("image keys must be stored under images/");
     }
     await storageService.assertObjectExists(imageKey); // UP-9
   }
@@ -255,51 +255,130 @@ export async function suspendListing(
   });
 }
 
-export interface ListingSearchQuery {
+const LISTING_LIST_SORTS = ["createdAt", "price", "title"] as const;
+export type ListingSortField = (typeof LISTING_LIST_SORTS)[number];
+
+export interface ListingListQuery {
+  limit: number;
+  offset: number;
+  sort: ListingSortField;
+  order: "asc" | "desc";
+  propertyType?: PropertyType;
+  country?: string;
+  minPrice?: number;
+  maxPrice?: number;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
-  limit?: number;
+  status?: ListingStatus;
 }
 
-// Search is a coordinate range scan against the stored lat/lng pair — no live
-// maps call (indexes @@index([status]) and @@index([latitude, longitude])).
-export async function searchActiveListings(query: ListingSearchQuery): Promise<SafeListing[]> {
-  const limit = Math.min(Math.max(query.limit ?? 24, 1), 100);
-  const where: Prisma.ListingWhereInput = { status: ListingStatus.ACTIVE };
+function listingOrderBy(sort: ListingSortField, order: "asc" | "desc"): Prisma.ListingOrderByWithRelationInput {
+  if (sort === "createdAt") return { createdAt: order };
+  if (sort === "price") return { price: order };
+  return { title: order };
+}
+
+// The owning profile id for a provider role, or null for non-owners. Used to
+// scope "own listings in any status" (dashboard) without inventing a filter.
+async function owningProfileScope(
+  actor: Actor,
+): Promise<{ agentId: string } | { agencyId: string } | { landlordId: string } | null> {
+  switch (actor.role) {
+    case UserRole.AGENT: {
+      const profile = await prisma.agentProfile.findUnique({ where: { userId: actor.userId } });
+      return profile ? { agentId: profile.id } : null;
+    }
+    case UserRole.AGENCY_ADMIN: {
+      const profile = await prisma.agencyProfile.findUnique({ where: { userId: actor.userId } });
+      return profile ? { agencyId: profile.id } : null;
+    }
+    case UserRole.LANDLORD: {
+      const profile = await prisma.landlordProfile.findUnique({ where: { userId: actor.userId } });
+      return profile ? { landlordId: profile.id } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+// Step 3 list: public search is ACTIVE listings (PR-LST-003 — listings with
+// open reports stay visible; nothing filters on report count). Reviewers may
+// filter by any status; owner-side roles may filter by any status but only
+// for their own listings. Any other actor asking for a non-active status is
+// denied with a 403 (PR-ADM-001), never silently downgraded to active-only.
+// Coordinate proximity is a range scan on the stored pair — no live maps call.
+export async function listListings(
+  actor: Actor,
+  query: ListingListQuery,
+): Promise<ListResult<SafeListing>> {
+  assertAllowed(actor.role, "VIEW_ANY_LISTING");
+
+  const isReviewer =
+    actor.role === UserRole.PLATFORM_REVIEWER || actor.role === UserRole.SUPER_ADMIN;
+  const where: Prisma.ListingWhereInput = {};
+
+  if (query.status && query.status !== ListingStatus.ACTIVE) {
+    if (isReviewer) {
+      where.status = query.status;
+    } else {
+      const scope = await owningProfileScope(actor);
+      if (!scope) {
+        throw ApiError.forbidden(
+          "Only reviewers and listing owners can filter by a non-active status",
+        );
+      }
+      where.status = query.status;
+      Object.assign(where, scope);
+    }
+  } else {
+    where.status = ListingStatus.ACTIVE;
+  }
+
+  if (query.propertyType) where.propertyType = query.propertyType;
+  if (query.country) where.country = query.country;
+
+  const priceFilter: Prisma.IntFilter = {};
+  if (query.minPrice !== undefined) priceFilter.gte = query.minPrice;
+  if (query.maxPrice !== undefined) priceFilter.lte = query.maxPrice;
+  if (Object.keys(priceFilter).length > 0) where.price = priceFilter;
 
   if (query.latitude !== undefined && query.longitude !== undefined) {
     const radiusKm = Math.min(Math.max(query.radiusKm ?? 5, 0.1), 50);
     const kmPerDeg = 111.32;
     const latMin = query.latitude - radiusKm / kmPerDeg;
     const latMax = query.latitude + radiusKm / kmPerDeg;
-    const lngSpread = (radiusKm / kmPerDeg) / Math.max(Math.cos((query.latitude * Math.PI) / 180), 0.2);
-    const lngMin = query.longitude - lngSpread;
-    const lngMax = query.longitude + lngSpread;
+    const lngSpread = radiusKm / kmPerDeg / Math.max(Math.cos((query.latitude * Math.PI) / 180), 0.2);
     where.latitude = { gte: latMin, lte: latMax };
-    where.longitude = { gte: lngMin, lte: lngMax };
+    where.longitude = { gte: query.longitude - lngSpread, lte: query.longitude + lngSpread };
   }
 
-  const rows = await prisma.listing.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    select: {
-      id: true,
-      title: true,
-      price: true,
-      address: true,
-      latitude: true,
-      longitude: true,
-      country: true,
-      propertyType: true,
-      status: true,
-      hasOpenReports: true,
-      createdAt: true,
-      images: { select: { id: true, uploadedAt: true } },
-    },
-  });
-  return rows;
+  const select = {
+    id: true,
+    title: true,
+    price: true,
+    address: true,
+    latitude: true,
+    longitude: true,
+    country: true,
+    propertyType: true,
+    status: true,
+    hasOpenReports: true,
+    createdAt: true,
+    images: { select: { id: true, uploadedAt: true } },
+  } as const;
+
+  const [items, total] = await Promise.all([
+    prisma.listing.findMany({
+      where,
+      orderBy: listingOrderBy(query.sort, query.order),
+      skip: query.offset,
+      take: query.limit,
+      select,
+    }),
+    prisma.listing.count({ where }),
+  ]);
+  return { items, total };
 }
 
 async function isListingOwnerSide(

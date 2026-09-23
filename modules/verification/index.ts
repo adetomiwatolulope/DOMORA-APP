@@ -60,7 +60,7 @@ export async function submitVerificationRequest(
   }
   const storageService = deps.storage ?? storage;
   if (!input.documentKey || !input.documentKey.startsWith("docs/")) {
-    throw ApiError.badRequest("documentKey is required and must be under docs/");
+    throw ApiError.validation("documentKey is required and must be under docs/");
   }
   // UP-9: the document must already exist in storage before a request can be filed.
   await storageService.assertObjectExists(input.documentKey);
@@ -164,7 +164,7 @@ export async function rejectVerification(
   assertAllowed(reviewer.role, "REVIEW_VERIFICATION_AND_REPORTS");
   const reviewNote = input.reviewNote?.trim();
   if (!reviewNote) {
-    throw ApiError.badRequest("reviewNote is required when rejecting (PR-VER-004)");
+    throw ApiError.validation("reviewNote is required when rejecting (PR-VER-004)");
   }
   const now = new Date();
 
@@ -206,25 +206,85 @@ export async function rejectVerification(
   return toSafe(request);
 }
 
-export async function listPendingVerifications(
-  reviewer: Actor,
-): Promise<SafeVerificationRequest[]> {
-  assertAllowed(reviewer.role, "REVIEW_VERIFICATION_AND_REPORTS");
-  const rows = await prisma.verificationRequest.findMany({
-    where: { status: VerificationStatus.PENDING },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    select: {
-      id: true,
-      userId: true,
-      status: true,
-      reviewNote: true,
-      reviewedById: true,
-      createdAt: true,
-      reviewedAt: true,
-    },
-  });
-  return rows;
+const VERIFICATION_LIST_SORTS = ["createdAt", "reviewedAt"] as const;
+export type VerificationSortField = (typeof VERIFICATION_LIST_SORTS)[number];
+
+export interface VerificationListQuery {
+  limit: number;
+  offset: number;
+  sort: VerificationSortField;
+  order: "asc" | "desc";
+  status?: VerificationStatus;
+  userId?: string;
+}
+
+export interface ListResult<T> {
+  items: T[];
+  total: number;
+}
+
+// Step 3 list: reviewer/super-admin sees all submissions (PR-ADM-001);
+// a verifiable applicant sees only their own. A status or (for reviewers)
+// applicant filter narrows the queue; sort is createdAt or reviewedAt.
+export async function listVerificationRequests(
+  actor: Actor,
+  query: VerificationListQuery,
+): Promise<ListResult<SafeVerificationRequest>> {
+  const isReviewer =
+    actor.role === UserRole.PLATFORM_REVIEWER || actor.role === UserRole.SUPER_ADMIN;
+  const isApplicant = VERIFIABLE_ROLES.includes(actor.role);
+  if (!isReviewer && !isApplicant) {
+    throw ApiError.forbidden("Only reviewers and applicants can list verification requests");
+  }
+
+  const where: Prisma.VerificationRequestWhereInput = {};
+  if (query.status) where.status = query.status;
+  if (isReviewer) {
+    if (query.userId) where.userId = query.userId;
+  } else {
+    if (query.userId && query.userId !== actor.userId) {
+      throw ApiError.forbidden("You may only list your own verification requests");
+    }
+    where.userId = actor.userId;
+  }
+
+  const select = {
+    id: true,
+    userId: true,
+    status: true,
+    reviewNote: true,
+    reviewedById: true,
+    createdAt: true,
+    reviewedAt: true,
+  } as const;
+  const orderBy = { [query.sort]: query.order } as const;
+
+  const [items, total] = await Promise.all([
+    prisma.verificationRequest.findMany({
+      where,
+      orderBy,
+      skip: query.offset,
+      take: query.limit,
+      select,
+    }),
+    prisma.verificationRequest.count({ where }),
+  ]);
+  return { items, total };
+}
+
+// Step 3 item: reviewers may read any request; an applicant only their own.
+export async function getVerificationRequestById(
+  requestId: string,
+  actor: Actor,
+): Promise<SafeVerificationRequest> {
+  const request = await prisma.verificationRequest.findUnique({ where: { id: requestId } });
+  if (!request) throw ApiError.notFound("Verification request not found");
+  const isReviewer =
+    actor.role === UserRole.PLATFORM_REVIEWER || actor.role === UserRole.SUPER_ADMIN;
+  if (request.userId !== actor.userId && !isReviewer) {
+    throw ApiError.forbidden("You are not allowed to view this verification request");
+  }
+  return toSafe(request);
 }
 
 // UP-4: the applicant may fetch their own document URL; reviewers may fetch any.

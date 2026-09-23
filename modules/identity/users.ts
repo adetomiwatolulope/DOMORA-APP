@@ -69,13 +69,13 @@ export async function createUser(input: CreateUserInput): Promise<SafeUser> {
   }
   const email = normalizeEmail(input.email);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw ApiError.badRequest("email is invalid");
+    throw ApiError.validation("email is invalid");
   }
   if (input.password.length < 8) {
-    throw ApiError.badRequest("password must be at least 8 characters");
+    throw ApiError.validation("password must be at least 8 characters");
   }
   if (input.role === UserRole.AGENCY_ADMIN && !input.agencyName?.trim()) {
-    throw ApiError.badRequest("agencyName is required for an agency admin account");
+    throw ApiError.validation("agencyName is required for an agency admin account");
   }
   const passwordHash = await hashPassword(input.password);
 

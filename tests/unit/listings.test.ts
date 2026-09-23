@@ -1,7 +1,7 @@
 import { ListingStatus, PropertyType, UserRole } from "@prisma/client";
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
-import { approveListing, createListing, searchActiveListings } from "@/modules/listings";
+import { approveListing, createListing, listListings } from "@/modules/listings";
 import {
   fakeStorage,
   makeReviewer,
@@ -81,7 +81,15 @@ describe("listings", () => {
     const reviewer = await makeReviewer("reviewer@example.com");
     await approveListing(pending.id, reviewer);
 
-    const results = await searchActiveListings({ latitude: 6.45, longitude: 3.44, radiusKm: 10 });
+    const results = (await listListings(agent, {
+      limit: 20,
+      offset: 0,
+      sort: "createdAt",
+      order: "desc",
+      latitude: 6.45,
+      longitude: 3.44,
+      radiusKm: 10,
+    })).items;
     expect(results.map((l) => l.id)).toContain(pending.id);
     expect(results.every((l) => l.status === ListingStatus.ACTIVE)).toBe(true);
   });
@@ -96,7 +104,18 @@ describe("listings", () => {
     const reviewer = await makeReviewer("reviewer@example.com");
     await approveListing(listing.id, reviewer);
 
-    const nearLagos = await searchActiveListings({ latitude: 6.45, longitude: 3.44, radiusKm: 10 });
+    const nearLagos = (await listListings(
+      agent,
+      {
+        limit: 20,
+        offset: 0,
+        sort: "createdAt",
+        order: "desc",
+        latitude: 6.45,
+        longitude: 3.44,
+        radiusKm: 10,
+      },
+    )).items;
     expect(nearLagos.find((l) => l.id === listing.id)).toBeUndefined();
   });
 });

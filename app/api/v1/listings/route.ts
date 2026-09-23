@@ -1,45 +1,32 @@
-import { PropertyType } from "@prisma/client";
-import { withHandler } from "@/lib/http";
-import {
-  asRecord,
-  enumValue,
-  optionalLatitude,
-  optionalString,
-  positiveInt,
-  requiredString,
-  requiredStringArray,
-} from "@/lib/validate";
-import { createListing, searchActiveListings } from "@/modules/listings";
+import { listEnvelope, withHandler } from "@/lib/http";
+import { createListingBody, listingsQuerySchema, parseBody, parseQuery } from "@/lib/schemas";
+import { createListing, listListings } from "@/modules/listings";
 
 export async function POST(req: Request) {
   return withHandler(req, async ({ actor, input }) => {
-    const body = asRecord(input);
-    const listing = await createListing(actor, {
-      title: requiredString(body, "title"),
-      price: positiveInt(body, "price"),
-      address: requiredString(body, "address"),
-      country: optionalString(body, "country"),
-      propertyType: enumValue(body, "propertyType", Object.keys(PropertyType) as (keyof typeof PropertyType)[]),
-      images: requiredStringArray(body, "images"),
-    });
+    const body = parseBody(input, createListingBody);
+    const listing = await createListing(actor, body);
     return { data: listing };
   });
 }
 
 export async function GET(req: Request) {
-  return withHandler(req, async ({ actor, input: _input }) => {
-    const url = new URL(req.url);
-    const latitude = optionalLatitude({ latitude: num(url.searchParams.get("lat")) }, "latitude");
-    const longitude = optionalLatitude({ longitude: num(url.searchParams.get("lng")) }, "longitude");
-    const radiusKm = url.searchParams.get("radiusKm") ? positiveInt({ radiusKm: num(url.searchParams.get("radiusKm")) }, "radiusKm") : undefined;
-    const limit = url.searchParams.get("limit") ? positiveInt({ limit: num(url.searchParams.get("limit")) }, "limit") : undefined;
-    const listings = await searchActiveListings({ latitude, longitude, radiusKm, limit });
-    return { data: listings };
+  return withHandler(req, async ({ actor }) => {
+    const query = parseQuery(new URL(req.url), listingsQuerySchema);
+    const listings = await listListings(actor, {
+      limit: query.limit,
+      offset: query.offset,
+      sort: query.sort,
+      order: query.order,
+      propertyType: query.propertyType,
+      status: query.status,
+      country: query.country,
+      minPrice: query.minPrice,
+      maxPrice: query.maxPrice,
+      latitude: query.latitude,
+      longitude: query.longitude,
+      radiusKm: query.radiusKm,
+    });
+    return listEnvelope(listings.items, listings.total, query.limit, query.offset);
   });
-}
-
-function num(value: string | null): number | undefined {
-  if (value === null) return undefined;
-  const parsed = Number(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
 }

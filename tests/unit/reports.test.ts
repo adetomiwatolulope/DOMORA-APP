@@ -2,7 +2,7 @@ import { ListingStatus, ReportTargetType, ReviewCaseStatus, UserRole } from "@pr
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/db";
 import { createReport, listReviewQueue, resolveReviewCase } from "@/modules/reports";
-import { searchActiveListings } from "@/modules/listings";
+import { listListings } from "@/modules/listings";
 import {
   activeListingFixture,
   makeReviewer,
@@ -44,7 +44,18 @@ describe("reports (PR-REP-001, PR-REP-002, PR-REP-003)", () => {
     expect(listing?.hasOpenReports).toBe(true);
 
     // PR-LST-003: the listing remains in search — never filtered on report count.
-    const results = await searchActiveListings({ latitude: 6.5, longitude: 3.4, radiusKm: 20 });
+    const results = (await listListings(
+      seeker,
+      {
+        limit: 20,
+        offset: 0,
+        sort: "createdAt",
+        order: "desc",
+        latitude: 6.5,
+        longitude: 3.4,
+        radiusKm: 20,
+      },
+    )).items;
     expect(results.find((l) => l.id === listingId)).toBeDefined();
   });
 
@@ -62,11 +73,18 @@ describe("reports (PR-REP-001, PR-REP-002, PR-REP-003)", () => {
     const adminActor = await makeVerifiedAgencyAdmin("admin@example.com");
 
     // non-reviewers get 403 on the queue (PR-ADM-001)
-    await expect(listReviewQueue(adminActor)).rejects.toMatchObject({ status: 403 });
+    await expect(
+      listReviewQueue(adminActor, { limit: 20, offset: 0, sort: "createdAt", order: "asc" }),
+    ).rejects.toMatchObject({ status: 403 });
 
     const reviewer = await makeReviewer("reviewer@example.com");
-    const queue = await listReviewQueue(reviewer);
-    expect(queue.some((c) => c.listingId === listingId)).toBe(true);
+    const queue = await listReviewQueue(reviewer, {
+      limit: 20,
+      offset: 0,
+      sort: "createdAt",
+      order: "asc",
+    });
+    expect(queue.items.some((c) => c.listingId === listingId)).toBe(true);
   });
 
   it("three open reports in the window create a ReviewCase, never a suspension (PR-REP-002)", async () => {
@@ -134,7 +152,7 @@ describe("reports (PR-REP-001, PR-REP-002, PR-REP-003)", () => {
     expect(audit.some((row) => row.action === "listing.suspended")).toBe(true);
   });
 
-  it("resolution without a note is rejected (400)", async () => {
+  it("resolution without a note is rejected (422)", async () => {
     const agent = await makeVerifiedAgent("agent@example.com");
     const listingId = await activeListingFixture(agent);
     const seekers = await Promise.all([
@@ -149,7 +167,7 @@ describe("reports (PR-REP-001, PR-REP-002, PR-REP-003)", () => {
     const caseRow = await prisma.reviewCase.findFirstOrThrow({ where: { report: { listingId } } });
     await expect(
       resolveReviewCase(caseRow.id, reviewer, { resolution: "  " }),
-    ).rejects.toMatchObject({ status: 400 });
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it("a resolved case cannot be re-resolved (DB-6)", async () => {

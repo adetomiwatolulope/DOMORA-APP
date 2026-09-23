@@ -1,13 +1,29 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { readSession, SESSION_COOKIE_NAME, type SessionPayload } from "@/lib/auth";
-import { ApiError } from "@/lib/errors";
+import { ApiError, type ErrorKind } from "@/lib/errors";
 
 // Thin handler wrapper (CS-9). All business decisions live in /modules;
 // this wrapper only resolves the session, enforces the CSRF/origin check
 // for state-changing requests (SEC-9), and maps results/errors.
+//
+// Step 3 response contract:
+//   success (single) -> { data: <resource> }
+//   success (list)   -> { data: [...], meta: { total, limit, offset, hasMore } }
+//   error            -> { error: { code, message } }
 
 type Handler = (ctx: { actor: SessionPayload; input: unknown }) => Promise<unknown>;
+
+const ERROR_CODES: Record<ErrorKind, string> = {
+  bad_request: "BAD_REQUEST",
+  unauthorized: "UNAUTHORIZED",
+  forbidden: "FORBIDDEN",
+  not_found: "NOT_FOUND",
+  conflict: "CONFLICT",
+  validation: "VALIDATION_ERROR",
+  rate_limited: "RATE_LIMITED",
+  config: "INTERNAL_ERROR",
+};
 
 async function resolveActor(): Promise<SessionPayload> {
   const cookieStore = await cookies();
@@ -25,14 +41,25 @@ function isTrustedOrigin(req: Request): boolean {
 
 function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof ApiError) {
-    return NextResponse.json({ error: error.message }, { status: error.status });
+    return NextResponse.json(
+      {
+        error: {
+          code: ERROR_CODES[error.kind] ?? "INTERNAL_ERROR",
+          message: error.message,
+        },
+      },
+      { status: error.status },
+    );
   }
   // CS-8 / SEC-12: unexpected failures return a generic body; details stay server-side.
   // Logging here excludes request bodies and personal data.
   if (error instanceof Error) {
     console.error(`unhandled error: ${error.name}: ${error.message}`);
   }
-  return NextResponse.json({ error: "internal_error" }, { status: 500 });
+  return NextResponse.json(
+    { error: { code: "INTERNAL_ERROR", message: "Internal server error" } },
+    { status: 500 },
+  );
 }
 
 export async function withHandler(req: Request, handler: Handler): Promise<NextResponse> {
@@ -45,7 +72,7 @@ export async function withHandler(req: Request, handler: Handler): Promise<NextR
     const rawBody = await req.text();
     input = rawBody.length > 0 ? parseBody(rawBody) : undefined;
     const result = await handler({ actor, input });
-    return NextResponse.json(result ?? { ok: true });
+    return NextResponse.json(result ?? { data: null });
   } catch (error) {
     return toErrorResponse(error);
   }
@@ -57,4 +84,30 @@ function parseBody(text: string): unknown {
   } catch {
     throw ApiError.badRequest("Invalid JSON body");
   }
+}
+
+// The one place a list response is shaped (Step 3). Every list endpoint must
+// use this; never return a different list shape per resource.
+export interface ListMeta {
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export function listEnvelope<T>(
+  items: T[],
+  total: number,
+  limit: number,
+  offset: number,
+): { data: T[]; meta: ListMeta } {
+  return {
+    data: items,
+    meta: {
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
+    },
+  };
 }

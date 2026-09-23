@@ -86,7 +86,7 @@ describe("verification", () => {
     const reviewer = await makeReviewer("reviewer@example.com");
     await expect(
       rejectVerification(request.id, reviewer, { reviewNote: "  " }),
-    ).rejects.toMatchObject({ status: 400 });
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it("a decided request cannot be re-decided (DB-6)", async () => {
