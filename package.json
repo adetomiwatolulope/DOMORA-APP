@@ -19,7 +19,7 @@
     "db:studio": "prisma studio"
   },
   "prisma": {
-    "seed": "tsx prisma/seed.ts"
+    "seed": "node --import tsx --conditions=react-server prisma/seed.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "2.2.1",
