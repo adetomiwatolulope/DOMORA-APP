@@ -45,7 +45,7 @@ export class ApiError extends Error {
     return new ApiError("validation", 422, message);
   }
 
-  // Reserved for the rate limiter's 429 (not wired to a limiter at MVP).
+  // 429 from the Step 5 per-IP rate limiter; the case is raised in lib/http.ts.
   static rateLimited(message = "Too many requests"): ApiError {
     return new ApiError("rate_limited", 429, message);
   }

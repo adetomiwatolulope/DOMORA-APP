@@ -101,6 +101,7 @@ Copy `.env.example` to `.env` and set:
 | `STORAGE_BUCKET`, `STORAGE_BUCKET_DOCUMENTS` | storage provider keys (unset = fail closed) |
 | `GEOCODING_PROVIDER` | geocoding provider key (unset = fail closed) |
 | `APP_ORIGIN` | allowed origin for state-changing requests (default `http://localhost:3000`) |
+| `RATE_LIMIT_MAX_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | optional overrides for the per-IP rate limiter (Step 5 defaults: 100 / 60s) |
 
 Then:
 
@@ -220,7 +221,7 @@ Every error is `{ "error": { "code", "message" } }` with an honest HTTP status:
 | 404 | `NOT_FOUND` | unknown resource id |
 | 409 | `CONFLICT` | illegal state transition (e.g. already-decided record, DB-6) |
 | 422 | `VALIDATION_ERROR` | body failed server-side schema validation |
-| 429 | `RATE_LIMITED` | reserved; no rate limiter wired at MVP |
+| 429 | `RATE_LIMITED` | per-IP rate limit spent (Step 5); carries `Retry-After` |
 | 500 | `INTERNAL_ERROR` | fail-closed seam (storage/geocoding) or unexpected fault |
 
 ```json
@@ -233,6 +234,25 @@ Every error is `{ "error": { "code", "message" } }` with an honest HTTP status:
 ```
 
 Request bodies and responses are `application/json`.
+
+### Rate limiting (Step 5)
+
+Every `/api/v1` request is counted against a per-IP fixed window **before**
+authentication is resolved, so unauthenticated abuse is throttled too. The
+numbers live in `lib/rate-limit/config.ts` — never in a handler or route file:
+
+| Setting | Env override | Default |
+| --- | --- | --- |
+| Max requests per window | `RATE_LIMIT_MAX_REQUESTS` | `100` |
+| Window length (seconds) | `RATE_LIMIT_WINDOW_SECONDS` | `60` |
+
+Once a client's budget is spent, requests return `429 RATE_LIMITED` with a
+`Retry-After` header naming the seconds until the window rolls over. The client
+address is the left-most value of `X-Forwarded-For` (requests with no such
+header share one `unknown` bucket). Different IPs get independent budgets. The
+store is in-memory — per serverless instance — which is fine at MVP volume
+(hundreds to low thousands of rows/week); a shared distributed counter is an
+open item for a later phase.
 
 ### Validation (single source, Step 4)
 
@@ -993,7 +1013,7 @@ curl -sS -X POST http://localhost:3000/api/v1/review-cases/9999eeee-8888-4777-86
 
 ---
 
-### Idempotent delivery work (Step 5)
+### Idempotent notification delivery (PR-NOT)
 
 Background work is idempotent by construction even though Phase 1 exposes no
 scheduler. `modules/notifications/deliver.ts`:

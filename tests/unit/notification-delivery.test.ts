@@ -10,7 +10,7 @@ import {
 } from "@/modules/notifications/deliver";
 import { makeUser, resetDb } from "../helpers";
 
-// Step 5: the delivery worker must tolerate a second run. The output (the
+// The delivery worker must tolerate a second run. The output (the
 // deliverable message) is keyed by the job id (notificationId); a re-run
 // checks that keyed output exists before producing anything, and only then
 // finishes the job (sentAt). These tests exercise exactly the
@@ -28,7 +28,7 @@ async function notificationRow(overrides: { channel?: NotificationChannel; templ
   });
 }
 
-describe("notification delivery is idempotent (Step 5)", () => {
+describe("notification delivery is idempotent", () => {
   beforeEach(async () => {
     await resetDb();
   });

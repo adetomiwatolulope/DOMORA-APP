@@ -1,5 +1,5 @@
 import { ListingStatus, PropertyType, ReportTargetType, UserRole } from "@prisma/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // External seams fail closed or are absent in tests, so the HTTP layer is
 // exercised against fakes — the same DI pattern the unit suites use, here at
@@ -29,6 +29,7 @@ vi.mock("next/headers", () => ({
 
 import { createSession } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { resetRateLimitStore } from "@/lib/rate-limit";
 import { createReport } from "@/modules/reports";
 import { createListing } from "@/modules/listings";
 import { submitVerificationRequest } from "@/modules/verification";
@@ -133,6 +134,7 @@ async function createActiveListing(
 describe("API endpoints (Step 3): envelope, list semantics, errors", () => {
   beforeEach(async () => {
     await resetDb();
+    resetRateLimitStore();
   });
 
   it("every list endpoint returns the offset/limit envelope with hasMore", async () => {
@@ -624,6 +626,7 @@ describe("API endpoints (Step 3): envelope, list semantics, errors", () => {
 describe("API endpoints (Step 4): ugly inputs", () => {
   beforeEach(async () => {
     await resetDb();
+    resetRateLimitStore();
   });
 
   it("clamps an oversized limit to the configured maximum instead of honouring it", async () => {
@@ -720,6 +723,62 @@ describe("API endpoints (Step 4): ugly inputs", () => {
   });
 });
 
+describe("API endpoints (Step 5): rate limiting", () => {
+  const savedMax = process.env.RATE_LIMIT_MAX_REQUESTS;
+  const savedWindow = process.env.RATE_LIMIT_WINDOW_SECONDS;
+
+  beforeEach(async () => {
+    await resetDb();
+    resetRateLimitStore();
+    // A tight budget and a long window make the 429 deterministic: a full
+    // suite run never accidentally crosses the 3600s window boundary.
+    process.env.RATE_LIMIT_MAX_REQUESTS = "5";
+    process.env.RATE_LIMIT_WINDOW_SECONDS = "3600";
+  });
+
+  afterEach(() => {
+    resetRateLimitStore();
+    restoreEnv(savedMax, "RATE_LIMIT_MAX_REQUESTS");
+    restoreEnv(savedWindow, "RATE_LIMIT_WINDOW_SECONDS");
+  });
+
+  it("spends the per-IP budget, returns 429 with Retry-After, then tolerates a different IP", async () => {
+    const seeker = await makeUser(UserRole.SEEKER, "ratelimit@example.com");
+    const agent = await makeVerifiedAgent("rlagent@example.com");
+    await activeListingFixture(agent);
+
+    const call = async (ip: string) =>
+      getListings(
+        new Request("http://localhost:3000/api/v1/listings", {
+          headers: {
+            cookie: `domora_session=${await sessionToken(seeker)}`,
+            "x-forwarded-for": ip,
+          },
+        }),
+      );
+
+    const ip = "203.0.113.77";
+    for (let i = 0; i < 5; i += 1) {
+      expect((await call(ip)).status).toBe(200);
+    }
+
+    const limited = await call(ip);
+    expect(limited.status).toBe(429);
+    const body = (await limited.json()) as ErrorEnvelope;
+    expect(body.error.code).toBe("RATE_LIMITED");
+    const retryAfter = Number(limited.headers.get("retry-after"));
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(3600);
+
+    expect((await call("198.51.100.42")).status).toBe(200);
+  });
+});
+
 function imageKey(index: number): string {
   return `images/fixtures/${index}.jpg`;
+}
+
+function restoreEnv(saved: string | undefined, name: string): void {
+  if (saved === undefined) delete process.env[name];
+  else process.env[name] = saved;
 }

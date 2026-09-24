@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/errors";
 import { NOTIFICATION_TEMPLATES, renderTemplate, type NotificationTemplateId } from "@/modules/notifications";
 
-// Step 5 — idempotent delivery work.
+// Idempotent delivery (PR-NOT-001/002): requires a safe re-run.
 //
 // Hazard: a worker can crash after doing the work (the send) but before
 // marking the job succeeded (Notification.sentAt). The retry would then send
@@ -104,8 +104,9 @@ export interface DeliverDeps {
   messenger?: Messenger;
 }
 
-// Delivers ONE notification. Safe to run twice (Step 5): the second run finds
-// the already-produced output under the job id and only finishes the job.
+// Delivers ONE notification. Safe to run twice (PR-NOT-001/002): the second
+// run finds the already-produced output under the job id and only finishes
+// the job.
 export async function deliverNotification(
   notificationId: string,
   deps: DeliverDeps = {},

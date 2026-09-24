@@ -8,3 +8,7 @@ if (!process.env.DATABASE_URL_TEST) {
 }
 process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
 process.env.DOMORA_ENV = "test";
+// Step 5 rate limiter: a huge default budget so the bulk suites never trip it;
+// the dedicated rate-limit tests override this per-test and reset the store.
+process.env.RATE_LIMIT_MAX_REQUESTS = "100000";
+process.env.RATE_LIMIT_WINDOW_SECONDS = "60";

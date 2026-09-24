@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { readSession, SESSION_COOKIE_NAME, type SessionPayload } from "@/lib/auth";
 import { ApiError, type ErrorKind } from "@/lib/errors";
+import { clientIp, consumeWindow } from "@/lib/rate-limit";
+import { getRateLimitConfig } from "@/lib/rate-limit/config";
 
 // Thin handler wrapper (CS-9). All business decisions live in /modules;
 // this wrapper only resolves the session, enforces the CSRF/origin check
@@ -64,6 +66,15 @@ function toErrorResponse(error: unknown): NextResponse {
 
 export async function withHandler(req: Request, handler: Handler): Promise<NextResponse> {
   try {
+    // Step 5: per-IP budget is spent before auth so unauthenticated abuse is
+    // counted too. Numbers live in lib/rate-limit/config.ts, not here.
+    const outcome = consumeWindow(clientIp(req), getRateLimitConfig());
+    if (!outcome.allowed) {
+      return NextResponse.json(
+        { error: { code: ERROR_CODES.rate_limited, message: "Too many requests" } },
+        { status: 429, headers: { "retry-after": String(outcome.retryAfterSeconds) } },
+      );
+    }
     if (req.method !== "GET" && req.method !== "HEAD" && !isTrustedOrigin(req)) {
       throw ApiError.forbidden("Untrusted request origin");
     }

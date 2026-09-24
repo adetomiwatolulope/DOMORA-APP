@@ -312,10 +312,11 @@ model Notification {
   @@index([sentAt])
 }
 
-// The durable output of the notification delivery worker (Step 5 idempotency):
-// the job id (notificationId) is the primary key of the output. Before a
-// re-run produces anything, it checks this record; if the output already
-// exists under the job id, the second run skips and only marks sentAt.
+// The durable output of the notification delivery worker (idempotent by
+// construction, PR-NOT-001/002): the job id (notificationId) is the primary
+// key of the output. Before a re-run produces anything, it checks this record;
+// if the output already exists under the job id, the second run skips and only
+// marks sentAt.
 model NotificationDelivery {
   notificationId String                @id
   notification   Notification          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
