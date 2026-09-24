@@ -35,3 +35,7 @@ Thumbs.db
 tsconfig.tsbuildinfo
 .vercel
 .env*
+
+# Step 8 consumer - never commit the live session token
+consumer/.env.local
+
