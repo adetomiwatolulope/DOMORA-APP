@@ -1,0 +1,22 @@
+﻿Domora live API - rate limit burst (RATE_LIMIT_MAX_REQUESTS=10/min, X-Forwarded-For spoofed 203.0.113.99)
+URL: https://domora-mu.vercel.app/api/v1/verification-requests?limit=1
+
+burst codes (45 requests): 200 200 200 200 200 200 200 200 200 200 200 200 200 200 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429 429
+200 OK: 14 / 45   429 Too Many Requests: 31 / 45
+
+Immediate follow-up request from the same client - full headers:
+HTTP/1.1 429 Too Many Requests
+Age: 0
+Cache-Control: public, max-age=0, must-revalidate
+Content-Type: application/json
+Date: Thu, 24 Sep 2026 21:30:55 GMT
+Retry-After: 5
+Server: Vercel
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+X-Matched-Path: /api/v1/verification-requests
+X-Vercel-Cache: MISS
+X-Vercel-Id: cpt1::iad1::cbvxp-1790285454948-82fb3f72b886
+Transfer-Encoding: chunked
+
+
+Step 5 rate limiting confirmed on the live URL (domora-mu.vercel.app).
