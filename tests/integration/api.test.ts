@@ -217,13 +217,27 @@ describe("API endpoints (Step 3): envelope, list semantics, errors", () => {
     expect(sortedDesc.data.map((l) => l.price)).toEqual([30_000_000, 10_000_000]);
   });
 
-  it("401 without a session and a consistent error envelope", async () => {
-    const err = await read<ErrorEnvelope>(
-      await getListings(await request(null, "GET", "/api/v1/listings")),
-      401,
+  it("guest can browse ACTIVE listings; non-active status is a 403, not a downgrade (UP-4)", async () => {
+    const agent = await makeVerifiedAgent("agent@example.com");
+    await createActiveListing(agent, { title: "Public flat", price: 20_000_000 });
+    const pending = await createListing(
+      agent,
+      { ...listingInput, title: "Hidden pending flat", images: [imageKey(1)] },
+      { storage: fakeStorage, geocoder: noOpGeocoder },
     );
-    expect(err.error.code).toBe("UNAUTHORIZED");
-    expect(typeof err.error.message).toBe("string");
+
+    const guestBrowse = await read<ListEnvelope<{ id: string; status: string }>>(
+      await getListings(await request(null, "GET", "/api/v1/listings?limit=20")),
+      200,
+    );
+    expect(guestBrowse.data.map((l) => l.status)).toEqual(["ACTIVE"]);
+    expect(guestBrowse.data.map((l) => l.id)).not.toContain(pending.id);
+
+    const err = await read<ErrorEnvelope>(
+      await getListings(await request(null, "GET", "/api/v1/listings?status=PENDING_REVIEW")),
+      403,
+    );
+    expect(err.error.code).toBe("FORBIDDEN");
   });
 
   it("403 (never a filtered body) for non-owners asking for a non-active status", async () => {

@@ -413,14 +413,6 @@ export default function Home() {
           <section className={styles.errorBanner} role="alert">
             <p className="typography-title-small">Error ({error.status || "network"}):</p>
             <p className="typography-body-medium">{error.message}</p>
-            {error.status === 401 && (
-              <p className="typography-body-medium">
-                Public browsing is session-gated in this MVP. To inspect the API
-                locally,{" "}
-                <a href="/api/grant-session?to=/">grant a local dev session</a>{" "}
-                (development only), then Search again.
-              </p>
-            )}
             <p className="typography-body-medium">
               <button type="button" className={styles.ghostBtn} onClick={() => void runSearch(0)}>
                 Retry

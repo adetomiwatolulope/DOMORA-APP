@@ -94,6 +94,38 @@ describe("listings", () => {
     expect(results.every((l) => l.status === ListingStatus.ACTIVE)).toBe(true);
   });
 
+  it("a guest (null actor) browses ACTIVE only and is denied non-active statuses (UP-4)", async () => {
+    const agent = await makeVerifiedAgent("agent@example.com");
+    const pending = await createListing(agent, input, { storage: fakeStorage });
+    const reviewer = await makeReviewer("reviewer@example.com");
+    await approveListing(pending.id, reviewer);
+    const draft = await createListing(agent, {
+      ...input,
+      title: "An unapproved flat",
+      images: ["images/listings/unapproved-1.jpg"],
+    }, { storage: fakeStorage });
+
+    const guestResults = (await listListings(null, {
+      limit: 20,
+      offset: 0,
+      sort: "createdAt",
+      order: "desc",
+    })).items;
+    expect(guestResults.every((l) => l.status === ListingStatus.ACTIVE)).toBe(true);
+    expect(guestResults.map((l) => l.id)).toContain(pending.id);
+    expect(guestResults.map((l) => l.id)).not.toContain(draft.id);
+
+    await expect(
+      listListings(null, {
+        limit: 20,
+        offset: 0,
+        sort: "createdAt",
+        order: "desc",
+        status: ListingStatus.PENDING_REVIEW,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it("search ignores listings outside the radius", async () => {
     const agent = await makeVerifiedAgent("agent@example.com");
     const listing = await createListing(

@@ -9,12 +9,20 @@ import { getRateLimitConfig } from "@/lib/rate-limit/config";
 // this wrapper only resolves the session, enforces the CSRF/origin check
 // for state-changing requests (SEC-9), and maps results/errors.
 //
+// withHandler is session-gated and throws 401 without a valid session.
+// withAnonymousHandler additionally allows a guest through — the actor is
+// then null and the MODULE decides what a guest may see (the listings GET is
+// the only such route; UP-4 public ACTIVE browse). A route never makes that
+// decision itself.
+//
 // Step 3 response contract:
 //   success (single) -> { data: <resource> }
 //   success (list)   -> { data: [...], meta: { total, limit, offset, hasMore } }
 //   error            -> { error: { code, message } }
 
 type Handler = (ctx: { actor: SessionPayload; input: unknown }) => Promise<unknown>;
+
+type GuestHandler = (ctx: { actor: SessionPayload | null; input: unknown }) => Promise<unknown>;
 
 const ERROR_CODES: Record<ErrorKind, string> = {
   bad_request: "BAD_REQUEST",
@@ -32,6 +40,11 @@ async function resolveActor(): Promise<SessionPayload> {
   const actor = await readSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
   if (!actor) throw ApiError.unauthorized();
   return actor;
+}
+
+async function resolveActorOrGuest(): Promise<SessionPayload | null> {
+  const cookieStore = await cookies();
+  return readSession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
 }
 
 function isTrustedOrigin(req: Request): boolean {
@@ -65,6 +78,23 @@ function toErrorResponse(error: unknown): NextResponse {
 }
 
 export async function withHandler(req: Request, handler: Handler): Promise<NextResponse> {
+  return withHandlerRaw(req, async (ctx) => handler({ actor: ctx.actor as SessionPayload, input: ctx.input }), {
+    allowAnonymous: false,
+  });
+}
+
+export async function withAnonymousHandler(
+  req: Request,
+  handler: GuestHandler,
+): Promise<NextResponse> {
+  return withHandlerRaw(req, handler, { allowAnonymous: true });
+}
+
+async function withHandlerRaw(
+  req: Request,
+  handler: GuestHandler,
+  opts: { allowAnonymous: boolean },
+): Promise<NextResponse> {
   try {
     // Step 5: per-IP budget is spent before auth so unauthenticated abuse is
     // counted too. Numbers live in lib/rate-limit/config.ts, not here.
@@ -78,7 +108,8 @@ export async function withHandler(req: Request, handler: Handler): Promise<NextR
     if (req.method !== "GET" && req.method !== "HEAD" && !isTrustedOrigin(req)) {
       throw ApiError.forbidden("Untrusted request origin");
     }
-    const actor = await resolveActor();
+    const actor =
+      opts.allowAnonymous === true ? await resolveActorOrGuest() : await resolveActor();
     let input: unknown;
     const rawBody = await req.text();
     input = rawBody.length > 0 ? parseBody(rawBody) : undefined;

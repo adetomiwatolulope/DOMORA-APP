@@ -255,6 +255,41 @@ export async function suspendListing(
   });
 }
 
+// Shared browse-filters builder (UP-4). Every browse path — guest, role-scoped,
+// and reviewer — resolves to the same status-gated where clause plus the
+// optional propertyType/country/price/proximity filters.
+function browseWhere(query: {
+  propertyType?: PropertyType;
+  country?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+}, status: ListingStatus): Prisma.ListingWhereInput {
+  const where: Prisma.ListingWhereInput = { status };
+
+  if (query.propertyType) where.propertyType = query.propertyType;
+  if (query.country) where.country = query.country;
+
+  const priceFilter: Prisma.IntFilter = {};
+  if (query.minPrice !== undefined) priceFilter.gte = query.minPrice;
+  if (query.maxPrice !== undefined) priceFilter.lte = query.maxPrice;
+  if (Object.keys(priceFilter).length > 0) where.price = priceFilter;
+
+  if (query.latitude !== undefined && query.longitude !== undefined) {
+    const radiusKm = Math.min(Math.max(query.radiusKm ?? 5, 0.1), 50);
+    const kmPerDeg = 111.32;
+    const latMin = query.latitude - radiusKm / kmPerDeg;
+    const latMax = query.latitude + radiusKm / kmPerDeg;
+    const lngSpread = radiusKm / kmPerDeg / Math.max(Math.cos((query.latitude * Math.PI) / 180), 0.2);
+    where.latitude = { gte: latMin, lte: latMax };
+    where.longitude = { gte: query.longitude - lngSpread, lte: query.longitude + lngSpread };
+  }
+
+  return where;
+}
+
 const LISTING_LIST_SORTS = ["createdAt", "price", "title"] as const;
 export type ListingSortField = (typeof LISTING_LIST_SORTS)[number];
 
@@ -308,50 +343,27 @@ async function owningProfileScope(
 // for their own listings. Any other actor asking for a non-active status is
 // denied with a 403 (PR-ADM-001), never silently downgraded to active-only.
 // Coordinate proximity is a range scan on the stored pair — no live maps call.
+//
+// UP-4: a guest (no session) browses the public ACTIVE list. This is a
+// distinct capability from the role-permission matrix — a guest is never a
+// matrix role — and it is strictly ACTIVE-only: a guest asking for a
+// non-active status gets an explicit 403, never a filtered downgrade.
 export async function listListings(
-  actor: Actor,
+  actor: Actor | null,
   query: ListingListQuery,
 ): Promise<ListResult<SafeListing>> {
-  assertAllowed(actor.role, "VIEW_ANY_LISTING");
-
-  const isReviewer =
-    actor.role === UserRole.PLATFORM_REVIEWER || actor.role === UserRole.SUPER_ADMIN;
-  const where: Prisma.ListingWhereInput = {};
-
-  if (query.status && query.status !== ListingStatus.ACTIVE) {
-    if (isReviewer) {
-      where.status = query.status;
-    } else {
-      const scope = await owningProfileScope(actor);
-      if (!scope) {
-        throw ApiError.forbidden(
-          "Only reviewers and listing owners can filter by a non-active status",
-        );
-      }
-      where.status = query.status;
-      Object.assign(where, scope);
+  const isGuest = actor === null;
+  if (isGuest) {
+    if (query.status && query.status !== ListingStatus.ACTIVE) {
+      throw ApiError.forbidden("Guests may only browse ACTIVE listings (UP-4)");
     }
   } else {
-    where.status = ListingStatus.ACTIVE;
+    assertAllowed(actor.role, "VIEW_ANY_LISTING");
   }
 
-  if (query.propertyType) where.propertyType = query.propertyType;
-  if (query.country) where.country = query.country;
-
-  const priceFilter: Prisma.IntFilter = {};
-  if (query.minPrice !== undefined) priceFilter.gte = query.minPrice;
-  if (query.maxPrice !== undefined) priceFilter.lte = query.maxPrice;
-  if (Object.keys(priceFilter).length > 0) where.price = priceFilter;
-
-  if (query.latitude !== undefined && query.longitude !== undefined) {
-    const radiusKm = Math.min(Math.max(query.radiusKm ?? 5, 0.1), 50);
-    const kmPerDeg = 111.32;
-    const latMin = query.latitude - radiusKm / kmPerDeg;
-    const latMax = query.latitude + radiusKm / kmPerDeg;
-    const lngSpread = radiusKm / kmPerDeg / Math.max(Math.cos((query.latitude * Math.PI) / 180), 0.2);
-    where.latitude = { gte: latMin, lte: latMax };
-    where.longitude = { gte: query.longitude - lngSpread, lte: query.longitude + lngSpread };
-  }
+  const isReviewer =
+    actor !== null &&
+    (actor.role === UserRole.PLATFORM_REVIEWER || actor.role === UserRole.SUPER_ADMIN);
 
   const select = {
     id: true,
@@ -367,6 +379,27 @@ export async function listListings(
     createdAt: true,
     images: { select: { id: true, uploadedAt: true } },
   } as const;
+
+  let where: Prisma.ListingWhereInput;
+  if (query.status && query.status !== ListingStatus.ACTIVE) {
+    if (isReviewer) {
+      where = browseWhere(query, query.status);
+    } else if (actor !== null) {
+      // Guest non-ACTIVE requests were already rejected above; anyone else
+      // here is an enrolled role, so the owner-only scope applies.
+      const scope = await owningProfileScope(actor);
+      if (!scope) {
+        throw ApiError.forbidden(
+          "Only reviewers and listing owners can filter by a non-active status",
+        );
+      }
+      where = { ...browseWhere(query, query.status), ...scope };
+    } else {
+      throw ApiError.forbidden("Guests may only browse ACTIVE listings (UP-4)");
+    }
+  } else {
+    where = browseWhere(query, ListingStatus.ACTIVE);
+  }
 
   const [items, total] = await Promise.all([
     prisma.listing.findMany({

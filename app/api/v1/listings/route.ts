@@ -1,4 +1,4 @@
-import { listEnvelope, withHandler } from "@/lib/http";
+import { listEnvelope, withAnonymousHandler, withHandler } from "@/lib/http";
 import { createListingBody, listingsQuerySchema, parseBody, parseQuery } from "@/lib/schemas";
 import { createListing, listListings } from "@/modules/listings";
 
@@ -10,8 +10,11 @@ export async function POST(req: Request) {
   });
 }
 
+// UP-4 public browse: allowed without a session. The module decides what a
+// guest may see (ACTIVE only) and returns 403 for any non-active status —
+// it is never a downgraded result.
 export async function GET(req: Request) {
-  return withHandler(req, async ({ actor }) => {
+  return withAnonymousHandler(req, async ({ actor }) => {
     const query = parseQuery(new URL(req.url), listingsQuerySchema);
     const listings = await listListings(actor, {
       limit: query.limit,
