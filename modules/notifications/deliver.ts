@@ -167,6 +167,9 @@ export interface FlushSummary {
 
 // The queue-pump entry point a scheduler/worker calls. It claims no global
 // lock; deliverNotification's per-job output key makes concurrent pumps safe.
+// The worker's production path is modules/notifications/queue.ts, whose claim
+// is atomic — this remains the in-process pump for a script or a test that
+// wants to drain the queue without a worker.
 export async function flushPendingNotifications(deps: { messenger?: Messenger; limit?: number } = {}): Promise<FlushSummary> {
   const pending = await prisma.notification.findMany({
     where: { sentAt: null },

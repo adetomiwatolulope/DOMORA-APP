@@ -102,6 +102,7 @@ Copy `.env.example` to `.env` and set:
 | `GEOCODING_PROVIDER` | geocoding provider key (unset = fail closed) |
 | `APP_ORIGIN` | allowed origin for state-changing requests (default `http://localhost:3000`) |
 | `RATE_LIMIT_MAX_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | optional overrides for the per-IP rate limiter (Step 5 defaults: 100 / 60s) |
+| `WORKER_CONCURRENCY` / `WORKER_POLL_INTERVAL_MS` / `WORKER_LEASE_MS` / `WORKER_MAX_ATTEMPTS` / `WORKER_RETRY_BASE_MS` / `WORKER_RETRY_MAX_MS` | optional overrides for the delivery worker (Step 3 defaults: 5 / 2000 / 60000 / 5 / 1000 / 300000) — see §The delivery worker |
 
 Then:
 
@@ -109,6 +110,7 @@ Then:
 npx prisma migrate dev    # create/migrate the dev DB
 npx prisma db seed        # deterministic Phase 1 seed rows
 npm run dev
+npm run worker            # the delivery worker, a separate process
 ```
 
 Run all gates: `npm run typecheck`, `npm run test`, `npm run build`.
@@ -119,9 +121,13 @@ Run all gates: `npm run typecheck`, `npm run test`, `npm run build`.
   - `/app/api/v1/*` — thin, versioned handlers (no business rules here)
   - `/app/(seeker)`, `/(provider)`, `/(reviewer)`, `/(admin)` — route groups
 - `/modules` — ALL business logic, by domain (identity, verification,
-  affiliations, listings, reports, audit, notifications, billing[empty at MVP])
+  affiliations, listings, reports, audit, notifications [delivery + job queue],
+  billing[empty at MVP])
 - `/lib` — cross-cutting utilities only (db, storage, geocoding, auth, http,
-  errors, schemas). `/lib` never imports `/modules`.
+  errors, schemas, worker config + concurrency pool). `/lib` never imports
+  `/modules`.
+- `/worker` — the delivery worker process: the tick (`pump.ts`) and the loop
+  (`index.ts`). Scheduling only; every decision it makes is a `/modules` call
 - `/prisma/schema.prisma` — locked schema, ported verbatim from PRD Section 10
 - `/tests` — per-module business-rule tests (`unit`) and cross-module route
   tests (`integration`, every endpoint over real handlers)
@@ -1015,8 +1021,7 @@ curl -sS -X POST http://localhost:3000/api/v1/review-cases/9999eeee-8888-4777-86
 
 ### Idempotent notification delivery (PR-NOT)
 
-Background work is idempotent by construction even though Phase 1 exposes no
-scheduler. `modules/notifications/deliver.ts`:
+Background work is idempotent by construction. `modules/notifications/deliver.ts`:
 
 1. **The output is keyed by the job id.** The deliverable (a rendered message
    artifact) is stored in `NotificationDelivery`, whose primary key
@@ -1032,6 +1037,123 @@ A crash between send and ack leaves the keyed output behind; the retry finds it,
 produces **nothing new**, and only finishes the job. Template variables are
 persisted on the `Notification` row (`vars`, PR-NOT-002) so a late delivery
 still renders the exact approved message.
+
+## The delivery worker (Step 3)
+
+A `Notification` row is the MVP's only unit of background work, so it is also
+the only job. The worker is a **separate process** from the Next.js app
+(`worker/`), and it is the production path for background work — the loop
+replaces the in-process `flushPendingNotifications` pump, which stays for
+scripts and tests.
+
+```sh
+npm run worker              # loop until stopped
+npm run worker -- --once    # one tick, for a cron-style deployment
+```
+
+Each tick is: claim what is due → do the work → settle each job as succeeded or
+failed. The loop sleeps `WORKER_POLL_INTERVAL_MS` after a tick that claimed
+nothing, and drains on `SIGINT`/`SIGTERM`.
+
+### Claiming is one statement, so two workers never share a job
+
+`claimNextNotificationJob()` in `modules/notifications/queue.ts` is a single
+`UPDATE` that flips the job to `PROCESSING` and returns the row:
+
+```sql
+UPDATE "Notification" AS job
+SET "status" = 'PROCESSING', "attempts" = job."attempts" + 1, "lockedAt" = ...
+WHERE (job."status" = 'PENDING' AND job."runAt" <= ...)
+   OR (job."status" = 'PROCESSING' AND job."lockedAt" <= ...)
+  AND job."id" = (SELECT due."id" FROM "Notification" AS due
+                  WHERE ... ORDER BY due."runAt" ASC FOR UPDATE SKIP LOCKED LIMIT 1)
+RETURNING job."id", job."attempts", job."lockedAt"
+```
+
+The database resolves the race, not the process:
+
+- **`FOR UPDATE SKIP LOCKED`** — a second worker skips the row this one is
+  holding instead of blocking behind it, so workers never wait on each other.
+- **The status predicate is part of the write** (CS-4), so it is re-evaluated
+  against the latest committed row: a job someone else already claimed matches
+  nothing. There is no read-then-write anywhere in the claim.
+- **Settling is guarded on ownership** — `WHERE id = ? AND status = PROCESSING
+  AND attempts = ?`. `attempts` was incremented by the claim, so a worker whose
+  lease expired while it was working can never settle the job another worker has
+  since taken. Both settle functions throw a `409` rather than write.
+
+Verified with 7 worker processes racing over 30 jobs: 30 delivered, **every job
+at `attempts = 1`** — no job was claimed twice, and 30 delivery artifacts for 30
+distinct job ids. The same race is asserted in-process in
+`tests/unit/worker-queue.test.ts` ("two workers racing for one job", "many
+workers racing over many jobs").
+
+### The queue state machine
+
+| State | Meaning | Left by |
+| --- | --- | --- |
+| `PENDING` | claimable once `runAt` has passed | the enqueue, or a failed attempt returning for a retry |
+| `PROCESSING` | a worker holds the job and is working on it | the claim, which stamps the lease (`lockedAt`) |
+| `SUCCEEDED` | the work is done and durable | the guarded settle, after the delivery output exists |
+| `FAILED` | the attempt budget is spent; a dead letter | the guarded settle, on the last permitted attempt |
+
+A job is `PENDING` and due when `runAt` has passed, **or** `PROCESSING` with an
+expired lease — a worker that dies mid-job leaves a `PROCESSING` row, and after
+`WORKER_LEASE_MS` another worker takes it over. A crash costs a retry, never a
+job.
+
+### Retries: backoff, then a dead letter
+
+A job whose work throws goes back to `PENDING` with `runAt` pushed out by
+`WORKER_RETRY_BASE_MS * 2^(attempts-1)`, clamped to `WORKER_RETRY_MAX_MS`. While
+`runAt` is in the future no other worker can claim it. Once
+`WORKER_MAX_ATTEMPTS` is spent the job becomes terminally `FAILED` — it is never
+claimed again, and `lastError` (truncated, 2000 chars) is the dead-letter
+reason. Re-running a terminal `FAILED` job is a manual, deliberate act.
+
+Retrying is safe because the delivery output is keyed by job id: a retry after a
+crash-mid-send produces nothing new and only finishes the job.
+
+### The concurrency cap
+
+A tick claims at most `WORKER_CONCURRENCY` jobs and runs them through
+`mapWithConcurrency` (`lib/worker/pool.ts`), so **at most N jobs are in flight in
+one process**. That cap is what keeps the worker inside a provider's rate limit:
+N concurrent jobs means at most N concurrent external calls. Because the cap
+also bounds claims per tick, the worker never marks a job `PROCESSING` while
+having no capacity to run it.
+
+Proven in `tests/unit/worker-pool.test.ts` (a gated pool never exceeds the
+limit) and `tests/unit/worker-tick.test.ts` (a slow messenger records its own
+peak overlap against 6 real jobs and the cap holds).
+
+### Configuration
+
+Every number lives in `lib/worker/config.ts` — never in the loop or the queue
+module.
+
+| Setting | Env override | Default | Meaning |
+| --- | --- | --- | --- |
+| Concurrency cap | `WORKER_CONCURRENCY` | `5` | max jobs in flight per process (N) |
+| Poll interval | `WORKER_POLL_INTERVAL_MS` | `2000` | wait after a tick that claimed nothing |
+| Lease | `WORKER_LEASE_MS` | `60000` | a `PROCESSING` job is reclaimable after this; must exceed the slowest job |
+| Max attempts | `WORKER_MAX_ATTEMPTS` | `5` | attempts before a job is terminally `FAILED` |
+| Retry base | `WORKER_RETRY_BASE_MS` | `1000` | first backoff between attempts |
+| Retry ceiling | `WORKER_RETRY_MAX_MS` | `300000` | backoff is clamped here |
+
+### Operational notes
+
+- **Run as many worker processes as you like.** Safety comes from the claim, not
+  from process count; a second process is pure throughput.
+- **A failed tick is not a lost job.** The error is logged and the next tick
+  continues; anything the tick still held is reclaimed once its lease expires.
+- **Time is compared in UTC explicitly** (`now() AT TIME ZONE 'UTC'`). The
+  columns are `timestamp without time zone` holding UTC, and a bare `now()` is a
+  `timestamptz` — Postgres would reinterpret stored UTC values in the session
+  `TimeZone`, shifting every comparison by the server's UTC offset.
+- **There is no supervision story yet** (no restart policy, no metrics, no
+  dead-letter UI). A `FAILED` job is currently only visible in the database.
+
 
 ## Design decisions
 

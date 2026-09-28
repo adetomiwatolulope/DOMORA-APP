@@ -83,6 +83,18 @@ enum NotificationChannel {
   IN_APP
 }
 
+// The queue state of a Notification row. A Notification is the MVP's only job
+// (its deliverable is keyed by its own id, see NotificationDelivery), so the
+// worker's claim loop drives this machine: PENDING -> PROCESSING -> SUCCEEDED
+// or FAILED, with a failed attempt returning to PENDING on a backoff until
+// maxAttempts is spent.
+enum JobStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
 model User {
   id                  String                @id @default(uuid())
   role                UserRole
@@ -307,9 +319,20 @@ model Notification {
   sentAt    DateTime?
   createdAt DateTime              @default(now())
   delivery  NotificationDelivery?
+  // The delivery worker's queue state. A job is claimable while status is
+  // PENDING and runAt has passed; the claim flips it to PROCESSING in one
+  // statement. lockedAt is the lease: a worker that dies mid-job leaves a
+  // PROCESSING row whose lease expires, and the claim takes it back.
+  status    JobStatus             @default(PENDING)
+  runAt     DateTime              @default(now())
+  attempts  Int                   @default(0)
+  lockedAt  DateTime?
+  lastError String?
 
   @@index([userId])
   @@index([sentAt])
+  // Serves the worker's claim scan (DB-4: ships with the query it serves).
+  @@index([status, runAt])
 }
 
 // The durable output of the notification delivery worker (idempotent by

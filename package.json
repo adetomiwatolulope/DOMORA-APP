@@ -10,6 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "worker": "node --import tsx --conditions=react-server worker/index.ts",
     "postinstall": "prisma generate",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
